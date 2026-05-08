@@ -1,13 +1,17 @@
 """
-Run pose extraction to get ViTPose keypoints from a video file and save to JSON.
+Run pose extraction to get ViTPose keypoints from video files and save to JSON.
 
 Usage:
-    Save output to inferred output filename: python scripts/run_pose_extraction.py data/raw/climb_001.MOV
-    Save output to specific output filename: python scripts/run_pose_extraction.py data/raw/climb_001.MOV --output data/poses/climb_001.json
-    Save output to inferred output filename + show live preview: python scripts/run_pose_extraction.py data/raw/climb_001.MOV --show
-    Save output to inferred output filename + save video with pose/bbox overlay: python scripts/run_pose_extraction.py data/raw/climb_001.MOV --save-video
+    Single video:
+        python scripts/run_pose_extraction.py data/raw/climb_001.MOV
+        python scripts/run_pose_extraction.py data/raw/climb_001.MOV --save-video
+        python scripts/run_pose_extraction.py data/raw/climb_001.MOV --show
 
-Output JSON structure (keypoint_names included for convenience):
+    Batch (all unprocessed videos in data/raw/):
+        python scripts/run_pose_extraction.py --batch
+        python scripts/run_pose_extraction.py --batch --save-video
+
+Output JSON structure (saved to data/poses/<video_stem>.json):
     {
         "video": "climb_001.MOV",
         "fps": 30.0,
@@ -149,7 +153,7 @@ def _draw_pose(bgr_frame: np.ndarray, result: dict) -> None:
     keypoints = result["keypoints"]
     scores = result["scores"]
     
-    # draw bounding box
+    # Draw bounding box
     box = result["box"]
     cv2.rectangle(
         bgr_frame,
@@ -170,34 +174,140 @@ def _draw_pose(bgr_frame: np.ndarray, result: dict) -> None:
             cv2.circle(bgr_frame, (int(kp[0]), int(kp[1])), 4, (0, 0, 255), -1)
             
             
-def main():
-    parser = argparse.ArgumentParser(description="Extract poses from a climbing video")
-    parser.add_argument("video", type=Path, help="Path to input video file")
-    parser.add_argument(
-        "--output", type=Path, default=None,
-        help="Output JSON path (default: data/poses/<video_name>.json)"
+def iter_unprocessed_videos(raw_dir: Path, poses_dir: Path, save_video: bool = False) -> list[tuple[Path, Path, bool]]:
+    """
+    Find video files in raw_dir that still need processing.
+
+    Returns:
+        List of (video_path, json_output_path, overlay_only) tuples.
+        overlay_only is True when the JSON exists but the overlay video doesn't.
+    """
+    videos = sorted(
+        p for p in raw_dir.iterdir()
+        if p.suffix.lower() in config.VIDEO_EXTENSIONS
     )
-    parser.add_argument("--show", action="store_true", help="Show live preview")
-    parser.add_argument("--device", type=str, default=None, help="cuda / mps / cpu")
-    parser.add_argument("--save-video", action="store_true", help="Save annotated overlay video")
+    jobs = []
+    for v in videos:
+        json_path = poses_dir / f"{v.stem}.json"
+        overlay_path = poses_dir / f"{v.stem}_overlay.mp4"
+        json_exists = json_path.exists()
+        overlay_exists = overlay_path.exists()
+        if not json_exists:
+            jobs.append((v, json_path, False))
+        elif save_video and not overlay_exists:
+            jobs.append((v, json_path, True))
+    return jobs
+
+
+def render_overlay_from_json(video_path: Path, json_path: Path) -> None:
+    """
+    Re-render an overlay video from an existing pose JSON, without re-running pose estimation.
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
+    out_path = config.POSES_DIR / f"{video_path.stem}_overlay.mp4"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+    frames_data = {f["frame_idx"]: f for f in data["frames"]}
+
+    frame_idx = 0
+    while True:
+        ret, bgr_frame = cap.read()
+        if not ret:
+            break
+
+        fd = frames_data.get(frame_idx)
+        if fd and fd["box"] is not None:
+            result = {
+                "box": np.array(fd["box"]),
+                "keypoints": np.array(fd["keypoints"]),
+                "scores": np.array(fd["scores"]),
+            }
+            _draw_pose(bgr_frame, result)
+
+        writer.write(bgr_frame)
+        frame_idx += 1
+
+    cap.release()
+    writer.release()
+    print(f"Saved overlay video to {out_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract poses from climbing video(s)")
+    parser.add_argument(
+        "video", type=Path, nargs="?", default=None,
+        help="Path to a single input video file"
+    )
+    parser.add_argument(
+        "--batch", action="store_true",
+        help=f"Process all unprocessed videos in {config.RAW_VIDEO_DIR}"
+    )
+    parser.add_argument(
+        "--show", action="store_true",
+        help="Show live preview")
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="cuda / mps / cpu")
+    parser.add_argument(
+        "--save-video", action="store_true",
+        help="Save annotated overlay video")
     args = parser.parse_args()
 
-    if not args.video.exists():
-        print(f"Error: Video not found: {args.video}")
-        sys.exit(1)
+    if args.batch and args.video:
+        parser.error("Provide either a video path or --batch, not both.")
+    if not args.batch and args.video is None:
+        parser.error("Provide a video path or use --batch.")
 
-    output_path = args.output or config.POSES_DIR / f"{args.video.stem}.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Build list of (video_path, output_path) pairs
+    if args.batch:
+        jobs = iter_unprocessed_videos(config.RAW_VIDEO_DIR, config.POSES_DIR, save_video=args.save_video)
+        if not jobs:
+            print("No unprocessed videos found.")
+            return
+        print(f"Batch: {len(jobs)} video(s) to process.")
+        n_extract = sum(1 for _, _, overlay_only in jobs if not overlay_only)
+        n_overlay = len(jobs) - n_extract
+        print(f"  {n_extract} full extraction, {n_overlay} overlay only")
+    else:
+        if not args.video.exists():
+            print(f"Error: Video not found: {args.video}")
+            sys.exit(1)
+        output_path = config.POSES_DIR / f"{args.video.stem}.json"
+        jobs = [(args.video, output_path, False)]
 
-    print("Loading models...")
-    models = load_models(device=args.device)
-    print(f"Using device: {models['device']}")
+    # Only load models if at least one job needs full extraction
+    needs_extraction = any(not overlay_only for _, _, overlay_only in jobs)
+    if needs_extraction:
+        print("Loading models...")
+        models = load_models(device=args.device)
+        print(f"Using device: {models['device']}")
+    else:
+        models = None
 
-    data = extract_video_poses(args.video, models, show=args.show, save_video=args.save_video)
+    for i, (video_path, output_path, overlay_only) in enumerate(jobs, 1):
+        if args.batch:
+            label = "overlay only" if overlay_only else "full extraction"
+            print(f"\n[{i}/{len(jobs)}] {video_path.name} ({label})")
 
-    with open(output_path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(f"Saved to {output_path}")
+        if overlay_only:
+            render_overlay_from_json(video_path, output_path)
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            data = extract_video_poses(video_path, models, show=args.show, save_video=args.save_video)
+            with open(output_path, "w") as f:
+                json.dump(data, f, indent=2)
+            print(f"Saved to {output_path}")
 
 
 if __name__ == "__main__":

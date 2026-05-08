@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 ########################
 # Paths
 ########################
@@ -7,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_VIDEO_DIR = DATA_DIR / "raw"
 POSES_DIR = DATA_DIR / "poses"
+
 
 ########################
 # ViTPose
@@ -26,6 +28,7 @@ PERSON_DETECTION_THRESHOLD = 0.5
 
 # Minimum confidence for keypoint to be considered valid
 KEYPOINT_CONFIDENCE_THRESHOLD = 0.3
+
 
 ########################
 # COCO Keypoint Schema
@@ -55,6 +58,7 @@ COCO_KEYPOINT_NAMES = [
 # Skeletal connections between keypoints for visualization
 COCO_SKELETON = [
     (0, 1), (0, 2), (1, 3), (2, 4),         # head
+    (5, 3), (6, 4),                         # shoulders to ears
     (5, 6),                                 # shoulders
     (5, 7), (7, 9),                         # left arm
     (6, 8), (8, 10),                        # right arm
@@ -64,3 +68,9 @@ COCO_SKELETON = [
     (12, 14), (14, 16),                     # right leg
 ]
 
+
+########################
+# Video
+########################
+
+VIDEO_EXTENSIONS = {".mov", ".mp4", ".avi", ".mkv"}
