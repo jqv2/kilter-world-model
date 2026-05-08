@@ -2,7 +2,11 @@
 data/raw/*
 !data/raw/climb_log.csv
 data/poses/
+data/raw_tb2/
+data/poses_tb2/
 data/calibrations/
+data/kilter.db
+data/tension.db
 
 # Python
 __pycache__/
