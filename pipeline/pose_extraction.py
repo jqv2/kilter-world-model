@@ -58,7 +58,7 @@ def load_models(device: str | None = None) -> dict:
     
 def detect_person(image: Image.Image, models: dict) -> np.ndarray | None:
     """
-    Detect the most confident person bounding box in the image.
+    Detect the largest person bounding box in the image.
 
     Args:
         image: PIL Image (RGB).
@@ -87,9 +87,9 @@ def detect_person(image: Image.Image, models: dict) -> np.ndarray | None:
     if not person_mask.any():
         return None
 
-    person_scores = results["scores"][person_mask]
     person_boxes = results["boxes"][person_mask]
-    best_idx = person_scores.argmax()
+    areas = (person_boxes[:, 2] - person_boxes[:, 0]) * (person_boxes[:, 3] - person_boxes[:, 1])
+    best_idx = areas.argmax()
     return person_boxes[best_idx].cpu().numpy()
 
 
