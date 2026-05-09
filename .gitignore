@@ -1,7 +1,8 @@
 # Data
 data/raw/*
+data/poses/*
 !data/raw/climb_log.csv
-data/poses/
+!data/poses/floats_your_boat.json
 data/raw_tb2/
 data/poses_tb2/
 data/calibrations/

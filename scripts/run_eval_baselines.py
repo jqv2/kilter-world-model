@@ -5,9 +5,9 @@ Very naive static baseline: predict that every frame's pose
 equals the first detected frame's pose (i.e. the climber doesn't move).
 
 Usage:
-    python evaluation/run_eval_baselines.py
-    python evaluation/run_eval_baselines.py data/poses/climb_001.json
-    python evaluation/run_eval_baselines.py --all
+    python scripts/run_eval_baselines.py
+    python scripts/run_eval_baselines.py data/poses/climb_001.json
+    python scripts/run_eval_baselines.py --all
 
 Prints per-video and aggregate metrics.
 """

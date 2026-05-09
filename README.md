@@ -74,7 +74,9 @@ If so, there are additional questions I want to answer:
 
 ### Current Evaluation Status
 
-I created a rough evaluation script and tested it on a very naive baseline (climber doesn't move). Here are the results on a handful of boulder problems.
+I created a rough evaluation script (run_eval_baselines.py) and tested it on a very naive baseline (climber doesn't move). You can run it yourself on the one json file containing keypoints extracted from a video of me climbing a problem called "Floats your boat" that I have uploaded to the github: `python scripts/run_eval_baselines.py data/poses/floats_your_boat.json`
+
+Here are the results on a handful of boulder problems (most of my data is gitignored due to space, so you won't see them in the data folder right now):
 ```
 === Static Pose Baseline ===
 Baseline: predict first frame's pose for all subsequent frames
