@@ -12,6 +12,78 @@ I aim to train a world model that learns how a climber’s body moves during bou
 3. A quantitative comparison against a greedy climber + inverse kinematics baseline on held-out problems.
 4. Skeleton overlay visualizations of predicted climbs.
 
+# Second checkpoint (5/22, sorry this is a couple hours late)
+## Progress since first checkpoint
+**Completed:**
+- Homography calibration pipeline (pixel space -> board space for both main board and kickboard)
+- Pose cleaning (detecting any brief anomalies or gaps and interpolating)
+- Dataset construction with train/test split by problem
+- Rough greedy IK baseline implementation
+- Rough transformer world model trained on pose sequences with problem context (hold positions + roles)
+- Structured model variant that receives explicit target hold conditioning
+- Autoregressive rollout animation
+- Evaluation script comparing all methods side-by-side
+
+**Current dataset:** 87 videos (69 train, 18 test), 64750 total frames (51150 train, 13600 test)
+
+## Evaluation
+
+### Evaluation plan
+
+**Quantitative (automated, on held-out routes):**
+- **Teacher forcing:** Feed ground truth previous pose, predict next frame. Reports mean keypoint error across all test frames. Measures single-step accuracy: can the model predict the immediate next pose given perfect input?
+- **Autoregressive rollout:** Seed with the first ~1 second of ground truth frames, then predict using the model's own outputs. Reports error at 25/50/75/100% through the climb to measure how errors accumulate.
+
+**Qualitative (manual inspection):**
+- Skeleton overlay videos of predicted climbs: do they look like plausible climbing movement?
+- Specific things to look for: does the model reach for the right holds? Are limb lengths stable? Does it produce biomechanically plausible poses?
+
+### Methods compared
+
+| Method | Description |
+|---|---|
+| Static baseline | Predict the first frame's pose for all subsequent frames. Lower bound, no movement at all. |
+| Greedy IK | From current pose, move the nearest limb to the nearest unused hold. Interpolation between keyframe poses. |
+| World model (direct) | Transformer autoregressively predicts next-frame pose delta from a context window of recent poses + all route hold positions/roles. |
+| World model (structured) | Same architecture but receives explicit target hold position as a conditioning token. |
+
+### Model details
+
+The world model is a transformer encoder that takes two kinds of tokens as input: a context window of recent poses (each a flattened 17-keypoint COCO skeleton) and the route's hold positions with role embeddings (start/middle/finish/foot-only). Self-attention lets pose tokens attend to hold tokens, so the model can learn which holds are relevant to the current movement. The model predicts a pose delta, which is added to the last context frame to produce the next absolute pose.
+
+Training uses Gaussian noise injection on context frames (to prevent overfitting to exact ground-truth inputs), a displacement-weighted MSE loss (to weight rare frames with actual movement over the many slower-moving frames), a limb-length penalty (to discourage limbs from stretching unreasonably), and scheduled sampling (to expose the model to its own drift during training).
+
+The structured variant adds a conditioning token encoding the current target hold position, derived from the ground truth hold visit order. The idea is that this would let the model focus just on motion execution.
+
+### Quantitative results
+
+All metrics are mean keypoint position error in board-space units, computed on the held-out test set.
+
+TF: Teacher-forcing. AR: Autoregressive rollout.
+
+==========================================================================================
+Method                               TF Mean   TF Med   AR p25   AR p50   AR p75  AR p100
+------------------------------------------------------------------------------------------
+Static (repeat frame 0)                58.26    59.43    67.70    98.23    78.97   127.08
+Greedy IK                              34.98    21.79    46.32    96.17     8.51   125.56
+best_structured (structured)            0.55     0.51    71.06   203.13   101.07  1495.32
+best_unstructured (direct)              0.58     0.54    51.56    65.09   262.31   597.52
+==========================================================================================
+
+Not promising... will be coming to office hours soon.
+
+### Qualitative results
+Overall, the world model seems to have a few fundamental issues:
+- It has a hard time generating distinct "moves." It just continuously warps and drifts. After some changes and improvements it seems to sometimes emulate climbing movements/poses while drifting in the general direction.
+- Even with hold conditioning, it's very hard to force the world model to actually use the holds and follow the obvious trajectory. Often times, a limb will vaguely try to reach toward a hold while the whole skeleton is drifting away.
+- With ~70 training videos, frame-level autoregressive prediction may not have enough data to learn climbing dynamics. A move-level approach (predict the next stable pose at each hold, rather than every intermediate frame) could reduce the prediction horizon and make the problem more feasible.
+
+### What still needs to be done
+- Go to office hours and ask for advice.
+- Refine existing models.
+- Think about move-level prediction instead of frame-level prediction.
+
+
 # First checkpoint (5/8)
 ## Progress
 **Completed:**

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import torch
 
 ########################
 # Paths
@@ -9,6 +10,12 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_VIDEO_DIR = DATA_DIR / "raw"
 POSES_DIR = DATA_DIR / "poses"
 
+
+########################
+# Board Information
+########################
+PRODUCT_SIZE_ID = 10
+MAX_ROUTE_HOLDS = 40  # max holds per route (for padding); most Kilter routes have 6-15
 
 ########################
 # ViTPose
@@ -76,8 +83,75 @@ COCO_SKELETON = [
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".avi", ".mkv"}
 
 ########################
+# Pose Cleaning
+########################
+
+BOARD_SPACE_MAX_DISPLACEMENT = 5.0  # max mean keypoint displacement per frame in board units
+
+########################
 # Evaluation
 ########################
 
 # Metrics are computed only on keypoints above this confidence
 EVAL_CONFIDENCE_THRESHOLD = KEYPOINT_CONFIDENCE_THRESHOLD
+
+########################
+# Calibration
+########################
+
+CALIBRATIONS_DIR = DATA_DIR / "calibrations"
+CALIBRATION_FRAMES_DIR = DATA_DIR / "calibration_frames"
+DETECTED_FEATURES_DIR = DATA_DIR / "detected_features"
+
+########################
+# Model
+########################
+
+NUM_KEYPOINTS = 17
+CONTEXT_WINDOW = 30      # ~1 second at 30fps
+MODEL_HIDDEN_DIM = 128
+MODEL_LAYERS = 2
+MODEL_HEADS = 4
+MODEL_DROPOUT = 0.1
+
+########################
+# Training
+########################
+
+BATCH_SIZE = 64
+LEARNING_RATE = 1e-3
+NUM_EPOCHS = 50
+BONE_LOSS_WEIGHT = 0.5          # weight of bone-length constraint relative to MSE
+NOISE = 0.5
+SCHEDULED_SAMPLING_MAX = 0.5    # max probability of replacing last context frame with model's own prediction
+TRAINING_STRIDES = [1,3,6,10]   # temporal strides for dataset construction
+ROLLOUT_STRIDE = 1              # temporal stride during autoregressive rollout (match single-stride training)
+
+########################
+# Structured Model
+########################
+
+# Limb endpoint keypoint indices (wrists and ankles)
+LIMB_KEYPOINTS = {
+    0: 9,   # left hand  -> left_wrist
+    1: 10,  # right hand -> right_wrist
+    2: 15,  # left foot  -> left_ankle
+    3: 16,  # right foot -> right_ankle
+}
+NUM_LIMBS = 4
+HAND_LIMBS = {0, 1}
+FOOT_LIMBS = {2, 3}
+
+HAND_ARRIVAL_THRESHOLD = 8.0    # board units
+FOOT_ARRIVAL_THRESHOLD = 8.0    # board units
+HOLD_ARRIVAL_FRAMES = 15        # consecutive frames to confirm arrival
+
+def get_device(override: str | None = None) -> "torch.device":
+    """Auto-detect best available device, or use override if given."""
+    if override:
+        return torch.device(override)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")

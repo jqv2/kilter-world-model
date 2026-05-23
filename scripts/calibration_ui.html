@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kilter Board Calibration</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar { width: 200px; background: #16213e; border-right: 1px solid #333; display: flex; flex-direction: column; }
+  .sidebar-header { padding: 12px; border-bottom: 1px solid #333; }
+  .sidebar-header h2 { font-size: 14px; color: #8be9fd; margin-bottom: 8px; }
+  .filter-row { display: flex; gap: 6px; }
+  .filter-btn { padding: 4px 10px; border: 1px solid #444; border-radius: 4px; background: none; color: #ccc; cursor: pointer; font-size: 12px; }
+  .filter-btn.active { background: #0f3460; border-color: #8be9fd; color: #8be9fd; }
+  .video-list { flex: 1; overflow-y: auto; }
+  .video-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #1a1a2e; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .video-item:hover { background: #1a1a3e; }
+  .video-item.active { background: #0f3460; }
+  .video-item .status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .video-item .status.done { background: #50fa7b; }
+  .video-item .status.pending { background: #ff5555; }
+  .video-item .subfolder { color: #666; font-size: 11px; }
+
+  /* Main area */
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .toolbar { padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .toolbar .title { font-size: 14px; font-weight: 600; color: #f8f8f2; min-width: 200px; }
+  .plane-toggle { display: flex; gap: 4px; }
+  .plane-btn { padding: 4px 12px; border: 1px solid #444; border-radius: 4px; background: none; color: #ccc; cursor: pointer; font-size: 12px; }
+  .plane-btn.active { background: #0f3460; border-color: #bd93f9; color: #bd93f9; }
+  .toolbar button { padding: 4px 12px; border: 1px solid #444; border-radius: 4px; background: none; color: #ccc; cursor: pointer; font-size: 12px; }
+  .toolbar button:hover { background: #333; }
+  .toolbar button.save-btn { border-color: #50fa7b; color: #50fa7b; }
+  .toolbar button.save-btn:hover { background: #1a3a1a; }
+  .nav-btns { margin-left: auto; display: flex; gap: 4px; }
+
+  /* Canvas area */
+  .content-row { flex: 1; display: flex; overflow: hidden; }
+  .canvas-area { flex: 1; position: relative; overflow: hidden; background: #111; }
+  .canvas-area canvas { position: absolute; top: 0; left: 0; }
+  .board-map { width: 500px; flex-shrink: 0; object-fit: contain; background: #1a1a2e; border-right: 1px solid #333; cursor: pointer; overflow: hidden; }
+
+  /* Label input overlay */
+  .label-overlay { position: absolute; background: #16213e; border: 1px solid #8be9fd; border-radius: 6px; padding: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 100; min-width: 220px; }
+  .label-overlay input { width: 100%; padding: 4px 8px; background: #1a1a2e; border: 1px solid #444; border-radius: 4px; color: #f8f8f2; font-size: 13px; outline: none; }
+  .label-overlay input:focus { border-color: #8be9fd; }
+  .label-overlay .suggestions { max-height: 150px; overflow-y: auto; margin-top: 4px; }
+  .label-overlay .suggestion { padding: 4px 8px; cursor: pointer; font-size: 12px; border-radius: 3px; }
+  .label-overlay .suggestion:hover, .label-overlay .suggestion.highlighted { background: #0f3460; color: #8be9fd; }
+  .label-overlay .suggestion .coords { color: #666; font-size: 11px; margin-left: 6px; }
+
+  /* Points list */
+  .points-panel { width: 180px; background: #16213e; border-left: 1px solid #333; display: flex; flex-direction: column; }
+  .points-header { padding: 8px 12px; border-bottom: 1px solid #333; font-size: 13px; font-weight: 600; }
+  .points-list { flex: 1; overflow-y: auto; }
+  .point-item { padding: 6px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1a1a2e; cursor: pointer; }
+  .point-item .label { color: #50fa7b; }
+  .point-item .px { color: #888; font-size: 11px; }
+  .point-item .delete-btn { background: none; border: none; color: #ff5555; cursor: pointer; font-size: 14px; padding: 0 4px; }
+  .point-item.editing { background: #0f3460; border-left: 2px solid #ff5555; }
+
+  /* Keyboard hints */
+  .hints { padding: 8px 12px; border-top: 1px solid #333; font-size: 11px; color: #666; line-height: 1.6; }
+  .hints kbd { background: #333; padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #50fa7b; color: #000; padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 200; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h2>Calibration Queue</h2>
+    <div class="filter-row">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pending">Pending</button>
+      <button class="filter-btn" data-filter="done">Done</button>
+    </div>
+  </div>
+  <div class="video-list" id="videoList"></div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <span class="title" id="videoTitle">Select a video</span>
+    <div class="plane-toggle">
+      <button class="plane-btn active" data-plane="main">Main Board</button>
+      <button class="plane-btn" data-plane="kick">Kickboard</button>
+    </div>
+    <label style="font-size:12px; color:#888;">
+      <input type="checkbox" id="showFeatures" checked> Show detected holds
+    </label>
+    <button class="save-btn" id="saveBtn">Save Calibration</button>
+    <button id="previewWarpBtn">Preview Warp</button>
+    <div class="nav-btns">
+      <button id="prevBtn">← Prev</button>
+      <button id="nextUncalBtn">Next uncal.</button>
+      <button id="nextBtn">Next →</button>
+    </div>
+  </div>
+  <div class="content-row">
+    <img id="boardMap" src="/api/board_map" class="board-map" title="Click to enlarge">
+    <div class="canvas-area" id="canvasArea">
+      <canvas id="mainCanvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="points-panel">
+  <div class="points-header">
+    <span id="pointsTitle">Main Board Points</span>
+    <span id="pointsCount" style="float:right; color:#888; font-weight:normal;"></span>
+  </div>
+  <canvas id="zoomCanvas" width="240" height="240" style="width:100%; border-bottom:1px solid #333; background:#000;"></canvas>
+  <div class="points-list" id="pointsList"></div>
+  <div class="hints">
+    <kbd>Click</kbd> place crosshair<br>
+    <kbd>←↑↓→</kbd> nudge 1px<br>
+    <kbd>Enter</kbd> or <kbd>Space</kbd> lock &amp; label<br>
+    <kbd>Esc</kbd> cancel crosshair<br>
+    <kbd>S</kbd> save &amp; next uncalibrated
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ===================== STATE =====================
+let editingIdx = null; // index into points[currentPlane] being edited, or null
+let videos = [];
+let currentVideoId = null;
+let currentPlane = 'main'; // 'main' or 'kick'
+let filter = 'all';
+
+let holdsData = null;     // { holds: {name: [x,y]}, corners: {...}, ... }
+let features = null;      // { hold_centers: [[x,y],...], board_corners: [...] }
+let frameImg = null;      // Image object
+
+let crosshair = null;     // {x, y} or null: current unlocked position
+let points = { main: [], kick: [] }; // [{px, py, label, boardX, boardY}, ...]
+
+// label input state
+let labelOverlay = null;
+let labelInput = null;
+let suggestions = [];
+let highlightedIdx = -1;
+
+const ZOOM_RADIUS = 60;
+const ZOOM_SCALE = 4;
+const SNAP_RADIUS = 20; // pixels: snap to detected feature if click is within this
+
+// ===================== INIT =====================
+async function init() {
+  holdsData = await (await fetch('/api/holds')).json();
+  videos = await (await fetch('/api/videos')).json();
+  renderVideoList();
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      filter = btn.dataset.filter;
+      renderVideoList();
+    });
+  });
+
+  document.querySelectorAll('.plane-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.plane-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPlane = btn.dataset.plane;
+      document.getElementById('pointsTitle').textContent =
+        currentPlane === 'main' ? 'Main Board Points' : 'Kickboard Points';
+      crosshair = null;
+      removeLabelOverlay();
+      renderCanvas();
+      renderPointsList();
+    });
+  });
+
+  document.getElementById('boardMap').addEventListener('click', () => {
+    window.open('/api/board_map', '_blank');
+  });
+  document.getElementById('showFeatures').addEventListener('change', renderCanvas);
+  document.getElementById('saveBtn').addEventListener('click', saveCalibration);
+  document.getElementById('previewWarpBtn').addEventListener('click', previewWarp);
+  function previewWarp() {
+    if (!currentVideoId) return;
+    const url = `/api/preview_warp/${currentVideoId}/${currentPlane}`;
+    window.open(url, '_blank');
+  }
+  document.getElementById('prevBtn').addEventListener('click', () => navigateVideo(-1));
+  document.getElementById('nextBtn').addEventListener('click', () => navigateVideo(1));
+  document.getElementById('nextUncalBtn').addEventListener('click', navigateToNextUncalibrated);
+
+  const canvas = document.getElementById('mainCanvas');
+  canvas.addEventListener('click', onCanvasClick);
+  canvas.setAttribute('tabindex', '0');
+  canvas.addEventListener('keydown', onCanvasKeydown);
+
+  window.addEventListener('resize', resizeCanvas);
+
+  // Load first uncalibrated, or first video
+  const firstUncal = videos.find(v => !v.has_calibration);
+  if (firstUncal) loadVideo(firstUncal.id);
+  else if (videos.length > 0) loadVideo(videos[0].id);
+}
+
+// ===================== VIDEO LIST =====================
+function renderVideoList() {
+  const list = document.getElementById('videoList');
+  const filtered = videos.filter(v => {
+    if (filter === 'pending') return !v.has_calibration;
+    if (filter === 'done') return v.has_calibration;
+    return true;
+  });
+
+  list.innerHTML = filtered.map(v => `
+    <div class="video-item ${v.id === currentVideoId ? 'active' : ''}"
+         data-id="${v.id}" onclick="loadVideo('${v.id}')">
+      <span class="status ${v.has_calibration ? 'done' : 'pending'}"></span>
+      <span>
+        ${v.subfolder ? `<span class="subfolder">${v.subfolder}/</span>` : ''}${v.name}
+      </span>
+    </div>
+  `).join('');
+}
+
+// ===================== LOAD VIDEO =====================
+async function loadVideo(videoId) {
+  currentVideoId = videoId;
+  crosshair = null;
+  removeLabelOverlay();
+
+  document.getElementById('videoTitle').textContent = videoId;
+  renderVideoList();
+
+  // Load frame image
+  frameImg = new Image();
+  frameImg.onload = () => {
+    resizeCanvas();
+    renderCanvas();
+  };
+  frameImg.src = `/api/frame/${videoId}`;
+
+  // Load features
+  features = await (await fetch(`/api/features/${videoId}`)).json();
+
+  // Load existing calibration
+  const cal = await (await fetch(`/api/calibration/${videoId}`)).json();
+  if (cal) {
+    points.main = (cal.main_points || []).map(p => ({
+      px: p.pixel[0], py: p.pixel[1],
+      label: p.label, boardX: p.board[0], boardY: p.board[1]
+    }));
+    points.kick = (cal.kick_points || []).map(p => ({
+      px: p.pixel[0], py: p.pixel[1],
+      label: p.label, boardX: p.board[0], boardY: p.board[1]
+    }));
+  } else {
+    points = { main: [], kick: [] };
+  }
+
+  renderPointsList();
+  document.getElementById('mainCanvas').focus();
+}
+
+// ===================== CANVAS =====================
+function resizeCanvas() {
+  const area = document.getElementById('canvasArea');
+  const canvas = document.getElementById('mainCanvas');
+  canvas.width = area.clientWidth;
+  canvas.height = area.clientHeight;
+  renderCanvas();
+}
+
+function getImageTransform() {
+  // Fit image in canvas, centered
+  const canvas = document.getElementById('mainCanvas');
+  if (!frameImg || !frameImg.naturalWidth) return { scale: 1, offsetX: 0, offsetY: 0 };
+
+  const scale = Math.min(
+    canvas.width / frameImg.naturalWidth,
+    canvas.height / frameImg.naturalHeight
+  );
+  const offsetX = (canvas.width - frameImg.naturalWidth * scale) / 2;
+  const offsetY = (canvas.height - frameImg.naturalHeight * scale) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+function canvasToImage(cx, cy) {
+  const { scale, offsetX, offsetY } = getImageTransform();
+  return { x: (cx - offsetX) / scale, y: (cy - offsetY) / scale };
+}
+
+function imageToCanvas(ix, iy) {
+  const { scale, offsetX, offsetY } = getImageTransform();
+  return { x: ix * scale + offsetX, y: iy * scale + offsetY };
+}
+
+function renderCanvas() {
+  const canvas = document.getElementById('mainCanvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!frameImg || !frameImg.naturalWidth) return;
+
+  const { scale, offsetX, offsetY } = getImageTransform();
+
+  // Draw frame
+  ctx.drawImage(frameImg, offsetX, offsetY,
+    frameImg.naturalWidth * scale, frameImg.naturalHeight * scale);
+
+  const showFeatures = document.getElementById('showFeatures').checked;
+
+  // Draw detected features
+  if (showFeatures && features) {
+    // Hold centers
+    const planeHolds = features.hold_centers?.[currentPlane] || [];
+    if (planeHolds.length) {
+      ctx.fillStyle = 'rgba(139, 233, 253, 0.4)';
+      planeHolds.forEach(([fx, fy]) => {
+        const { x, y } = imageToCanvas(fx, fy);
+        ctx.beginPath();
+        ctx.arc(x, y, 4 * scale, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Board corners
+    const planeCorners = features.board_corners?.[currentPlane];
+    if (planeCorners) {
+      ctx.strokeStyle = 'rgba(80, 250, 123, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      planeCorners.forEach(([fx, fy], i) => {
+        const { x, y } = imageToCanvas(fx, fy);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
+  // Draw locked points
+  const planePoints = points[currentPlane];
+  planePoints.forEach((p, i) => {
+    if (i === editingIdx) return; // skip: shown as crosshair instead
+    const { x, y } = imageToCanvas(p.px, p.py);
+    ctx.strokeStyle = '#50fa7b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x - 12, y); ctx.lineTo(x + 12, y);
+    ctx.moveTo(x, y - 12); ctx.lineTo(x, y + 12);
+    ctx.stroke();
+    ctx.fillStyle = '#50fa7b';
+    ctx.font = '12px monospace';
+    ctx.fillText(`${i + 1}: ${p.label}`, x + 8, y - 8);
+  });
+
+  // Draw active crosshair
+  if (crosshair) {
+    const { x, y } = imageToCanvas(crosshair.x, crosshair.y);
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = '#ff5555';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x - 15, y); ctx.lineTo(x + 15, y);
+    ctx.moveTo(x, y - 15); ctx.lineTo(x, y + 15);
+    ctx.stroke();
+    ctx.restore();
+    // Coordinates
+    ctx.fillStyle = '#ffb86c';
+    ctx.font = '11px monospace';
+    ctx.fillText(`(${Math.round(crosshair.x)}, ${Math.round(crosshair.y)})`, x + 10, y - 10);
+  }
+
+  // Zoom inset
+  renderZoom();
+}
+
+function renderZoom() {
+  const zoomCanvas = document.getElementById('zoomCanvas');
+  const zCtx = zoomCanvas.getContext('2d');
+  zCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+
+  if (!crosshair || !frameImg) return;
+
+  const sx = crosshair.x - ZOOM_RADIUS;
+  const sy = crosshair.y - ZOOM_RADIUS;
+  const sw = ZOOM_RADIUS * 2;
+  const sh = ZOOM_RADIUS * 2;
+
+  zCtx.drawImage(frameImg, sx, sy, sw, sh, 0, 0, zoomCanvas.width, zoomCanvas.height);
+
+  // Draw center crosshair on zoom
+  const cx = zoomCanvas.width / 2;
+  const cy = zoomCanvas.height / 2;
+  zCtx.strokeStyle = 'rgba(255, 85, 85, 0.7)';
+  zCtx.lineWidth = 1;
+  zCtx.beginPath();
+  zCtx.moveTo(cx - 10, cy); zCtx.lineTo(cx + 10, cy);
+  zCtx.moveTo(cx, cy - 10); zCtx.lineTo(cx, cy + 10);
+  zCtx.stroke();
+}
+
+// ===================== INTERACTION =====================
+function onCanvasClick(e) {
+  if (labelOverlay) return;
+
+  const canvas = document.getElementById('mainCanvas');
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  const { x, y } = canvasToImage(cx, cy);
+
+  // Snap to nearest detected feature
+  let snappedX = x, snappedY = y;
+  const planeHolds = features?.hold_centers?.[currentPlane] || [];
+  if (planeHolds.length) {
+    let minDist = SNAP_RADIUS;
+    planeHolds.forEach(([fx, fy]) => {
+      const dist = Math.hypot(fx - x, fy - y);
+      if (dist < minDist) {
+        minDist = dist;
+        snappedX = fx;
+        snappedY = fy;
+      }
+    });
+  }
+
+  crosshair = { x: snappedX, y: snappedY };
+  renderCanvas();
+  canvas.focus();
+}
+
+function onCanvasKeydown(e) {
+  // S to save
+  if (e.key === 's' || e.key === 'S') {
+    if (!labelOverlay) {
+      e.preventDefault();
+      saveAndNext();
+      return;
+    }
+  }
+
+  if (!crosshair) return;
+
+  // Arrow keys
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    if (labelOverlay) return;
+    const step = e.shiftKey ? 5 : 0.5;
+    if (e.key === 'ArrowLeft') crosshair.x = Math.max(0, crosshair.x - step);
+    if (e.key === 'ArrowRight') crosshair.x = Math.min(frameImg.naturalWidth - 1, crosshair.x + step);
+    if (e.key === 'ArrowUp') crosshair.y = Math.max(0, crosshair.y - step);
+    if (e.key === 'ArrowDown') crosshair.y = Math.min(frameImg.naturalHeight - 1, crosshair.y + step);
+    renderCanvas();
+    return;
+  }
+
+  // Enter/Space to lock and show label input (or finish edit)
+  if ((e.key === 'Enter' || e.key === ' ') && !labelOverlay) {
+    e.preventDefault();
+    if (editingIdx !== null) {
+      finishEdit();
+    } else {
+      showLabelInput();
+    }
+    return;
+  }
+
+  // Escape
+  if (e.key === 'Escape') {
+    if (labelOverlay) {
+      removeLabelOverlay();
+    } else if (editingIdx !== null) {
+      editingIdx = null;
+      crosshair = null;
+      renderPointsList();
+    } else {
+      crosshair = null;
+    }
+    renderCanvas();
+  }
+}
+
+// ===================== LABEL INPUT =====================
+function showLabelInput() {
+  const { x, y } = imageToCanvas(crosshair.x, crosshair.y);
+
+  labelOverlay = document.createElement('div');
+  labelOverlay.className = 'label-overlay';
+  labelOverlay.style.left = `${Math.min(x + 20, window.innerWidth - 280)}px`;
+  labelOverlay.style.top = `${Math.min(y, window.innerHeight - 250)}px`;
+
+  labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.placeholder = 'Hold name or corner (e.g. 26,10 or MTL)';
+  labelInput.addEventListener('input', onLabelInput);
+  labelInput.addEventListener('keydown', onLabelKeydown);
+
+  const sugBox = document.createElement('div');
+  sugBox.className = 'suggestions';
+  sugBox.id = 'suggestionsBox';
+
+  labelOverlay.appendChild(labelInput);
+  labelOverlay.appendChild(sugBox);
+  document.getElementById('canvasArea').appendChild(labelOverlay);
+
+  labelInput.focus();
+  highlightedIdx = -1;
+  updateSuggestions('');
+}
+
+function removeLabelOverlay() {
+  if (labelOverlay) {
+    labelOverlay.remove();
+    labelOverlay = null;
+    labelInput = null;
+  }
+}
+
+function buildSearchIndex() {
+  // All valid labels: hold names + corner names
+  const entries = [];
+  if (holdsData) {
+    for (const [name, [x, y]] of Object.entries(holdsData.holds)) {
+      entries.push({ label: name, boardX: x, boardY: y, type: 'hold' });
+    }
+    for (const [name, [x, y]] of Object.entries(holdsData.corners)) {
+      entries.push({ label: name, boardX: x, boardY: y, type: 'corner' });
+    }
+  }
+  return entries;
+}
+
+function updateSuggestions(query) {
+  const allEntries = buildSearchIndex();
+  const q = query.toLowerCase();
+
+  if (q.length === 0) {
+    suggestions = allEntries.slice(0, 10);
+  } else {
+    // Filter: starts with, then contains
+    const starts = allEntries.filter(e => e.label.toLowerCase().startsWith(q));
+    const contains = allEntries.filter(e =>
+      !e.label.toLowerCase().startsWith(q) && e.label.toLowerCase().includes(q)
+    );
+    suggestions = [...starts, ...contains].slice(0, 10);
+  }
+
+  highlightedIdx = suggestions.length > 0 ? 0 : -1;
+  renderSuggestions();
+}
+
+function renderSuggestions() {
+  const box = document.getElementById('suggestionsBox');
+  if (!box) return;
+  box.innerHTML = suggestions.map((s, i) => `
+    <div class="suggestion ${i === highlightedIdx ? 'highlighted' : ''}"
+         onmousedown="selectSuggestion(${i})">
+      ${s.label}
+      <span class="coords">(${s.boardX}, ${s.boardY})</span>
+      ${s.type === 'corner' ? '<span class="coords">[corner]</span>' : ''}
+    </div>
+  `).join('');
+}
+
+function onLabelInput(e) {
+  updateSuggestions(e.target.value);
+}
+
+function onLabelKeydown(e) {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    highlightedIdx = Math.min(highlightedIdx + 1, suggestions.length - 1);
+    renderSuggestions();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    highlightedIdx = Math.max(highlightedIdx - 1, 0);
+    renderSuggestions();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (highlightedIdx >= 0 && highlightedIdx < suggestions.length) {
+      selectSuggestion(highlightedIdx);
+    } else {
+      // Try exact match
+      const val = labelInput.value.trim();
+      const upper = val.toUpperCase();
+      const allEntries = buildSearchIndex();
+      const match = allEntries.find(e =>
+        e.label === val || e.label === upper
+      );
+      if (match) {
+        lockPoint(match);
+      }
+    }
+  } else if (e.key === 'Escape') {
+    removeLabelOverlay();
+    document.getElementById('mainCanvas').focus();
+  }
+}
+
+function selectSuggestion(idx) {
+  if (idx >= 0 && idx < suggestions.length) {
+    lockPoint(suggestions[idx]);
+  }
+}
+
+function lockPoint(entry) {
+  points[currentPlane].push({
+    px: crosshair.x,
+    py: crosshair.y,
+    label: entry.label,
+    boardX: entry.boardX,
+    boardY: entry.boardY,
+  });
+
+  crosshair = null;
+  removeLabelOverlay();
+  renderCanvas();
+  renderPointsList();
+  document.getElementById('mainCanvas').focus();
+}
+
+// ===================== POINTS LIST =====================
+function renderPointsList() {
+  const list = document.getElementById('pointsList');
+  const planePoints = points[currentPlane];
+  const count = document.getElementById('pointsCount');
+  count.textContent = `${planePoints.length} point${planePoints.length !== 1 ? 's' : ''}`;
+
+  list.innerHTML = planePoints.map((p, i) => `
+    <div class="point-item ${i === editingIdx ? 'editing' : ''}" onclick="startEditPoint(${i})">
+      <span><span class="label">${i + 1}: ${p.label}</span></span>
+      <span>
+        <span class="px">(${Math.round(p.px)}, ${Math.round(p.py)})</span>
+        <button class="delete-btn" onclick="event.stopPropagation(); deletePoint(${i})" title="Delete">×</button>
+      </span>
+    </div>
+  `).join('');
+}
+
+function deletePoint(idx) {
+  points[currentPlane].splice(idx, 1);
+  renderCanvas();
+  renderPointsList();
+}
+
+function startEditPoint(idx) {
+  editingIdx = idx;
+  const p = points[currentPlane][idx];
+  crosshair = { x: p.px, y: p.py };
+  renderCanvas();
+  renderPointsList();
+  document.getElementById('mainCanvas').focus();
+}
+
+function finishEdit() {
+  if (editingIdx !== null && crosshair) {
+    points[currentPlane][editingIdx].px = crosshair.x;
+    points[currentPlane][editingIdx].py = crosshair.y;
+  }
+  editingIdx = null;
+  crosshair = null;
+  renderCanvas();
+  renderPointsList();
+}
+
+// ===================== SAVE =====================
+async function saveCalibration() {
+  if (!currentVideoId) return;
+
+  const cal = {
+    video_id: currentVideoId,
+    main_points: points.main.map(p => ({
+      pixel: [p.px, p.py],
+      board: [p.boardX, p.boardY],
+      label: p.label,
+    })),
+    kick_points: points.kick.map(p => ({
+      pixel: [p.px, p.py],
+      board: [p.boardX, p.boardY],
+      label: p.label,
+    })),
+  };
+
+  const resp = await fetch(`/api/calibration/${currentVideoId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cal),
+  });
+
+  if (resp.ok) {
+    // Update video status
+    const v = videos.find(v => v.id === currentVideoId);
+    if (v) v.has_calibration = true;
+    renderVideoList();
+    showToast('Calibration saved');
+  } else {
+    showToast('Save failed!');
+  }
+}
+
+async function saveAndNext() {
+  await saveCalibration();
+  navigateToNextUncalibrated();
+}
+
+// ===================== NAVIGATION =====================
+function navigateVideo(delta) {
+  const idx = videos.findIndex(v => v.id === currentVideoId);
+  const next = idx + delta;
+  if (next >= 0 && next < videos.length) {
+    loadVideo(videos[next].id);
+  }
+}
+
+function navigateToNextUncalibrated() {
+  const idx = videos.findIndex(v => v.id === currentVideoId);
+  for (let i = idx + 1; i < videos.length; i++) {
+    if (!videos[i].has_calibration) {
+      loadVideo(videos[i].id);
+      return;
+    }
+  }
+  // Wrap around
+  for (let i = 0; i < idx; i++) {
+    if (!videos[i].has_calibration) {
+      loadVideo(videos[i].id);
+      return;
+    }
+  }
+  showToast('All videos calibrated!');
+}
+
+// ===================== TOAST =====================
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// ===================== START =====================
+init();
+</script>
+</body>
+</html>

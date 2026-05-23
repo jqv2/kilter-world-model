@@ -169,7 +169,7 @@ def _draw_pose(bgr_frame: np.ndarray, result: dict) -> None:
             pt2 = tuple(int(v) for v in keypoints[j])
             cv2.line(bgr_frame, pt1, pt2, (0, 255, 0), 2)
 
-    for _, (kp, score) in enumerate(zip(keypoints, scores)):
+    for kp, score in zip(keypoints, scores):
         if score > config.KEYPOINT_CONFIDENCE_THRESHOLD:
             cv2.circle(bgr_frame, (int(kp[0]), int(kp[1])), 4, (0, 0, 255), -1)
             

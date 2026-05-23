@@ -30,12 +30,7 @@ def load_models(device: str | None = None) -> dict:
     """
     
     if device is None:
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
+        device = str(config.get_device())
 
     person_processor = AutoProcessor.from_pretrained(config.PERSON_DETECTOR_ID)
     person_model = RTDetrForObjectDetection.from_pretrained(

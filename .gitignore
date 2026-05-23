@@ -8,6 +8,12 @@ data/poses_tb2/
 data/calibrations/
 data/kilter.db
 data/tension.db
+data/dataset.npz
+data/checkpoints/
+data/viz/
+data/calibration_frames/
+data/detected_features/
+data/holds.json
 
 # Python
 __pycache__/
@@ -30,3 +36,4 @@ __pycache__/
 
 # Misc
 test_calibration.py
+tb2-colab.zip
