@@ -61,14 +61,12 @@ All metrics are mean keypoint position error in board-space units, computed on t
 
 TF: Teacher-forcing. AR: Autoregressive rollout.
 
-==========================================================================================
-Method                               TF Mean   TF Med   AR p25   AR p50   AR p75  AR p100
-------------------------------------------------------------------------------------------
-Static (repeat frame 0)                58.26    59.43    67.70    98.23    78.97   127.08
-Greedy IK                              34.98    21.79    46.32    96.17     8.51   125.56
-best_structured (structured)            0.55     0.51    71.06   203.13   101.07  1495.32
-best_unstructured (direct)              0.58     0.54    51.56    65.09   262.31   597.52
-==========================================================================================
+| Method | TF Mean | TF Med | AR p25 | AR p50 | AR p75 | AR p100 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Static (repeat frame 0) | 58.26 | 59.43 | 67.70 | 98.23 | 78.97 | 127.08 |
+| Greedy IK | 34.98 | 21.79 | 46.32 | 96.17 | 8.51 | 125.56 |
+| best_structured (structured) | 0.55 | 0.51 | 71.06 | 203.13 | 101.07 | 1495.32 |
+| best_unstructured (direct) | 0.58 | 0.54 | 51.56 | 65.09 | 262.31 | 597.52 |
 
 Not promising... will be coming to office hours soon.
 
