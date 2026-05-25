@@ -94,6 +94,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> PoseTransformer |
         n_layers=model_config.get("n_layers", config.MODEL_LAYERS),
         n_heads=model_config.get("n_heads", config.MODEL_HEADS),
         context_len=model_config.get("context_window", config.CONTEXT_WINDOW),
+        dropout=model_config.get("dropout", config.MODEL_DROPOUT),
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)

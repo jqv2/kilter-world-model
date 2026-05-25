@@ -488,6 +488,10 @@ def main():
                         help="Use structured model variant (target hold as input)")
     parser.add_argument("--hold-weight", type=float, default=0.0,
                         help="Weight for hold proximity loss (structured model only, 0 to disable)")
+    parser.add_argument("--dropout", type=float, default=config.MODEL_DROPOUT,
+                        help="Dropout rate for transformer layers")
+    parser.add_argument("--weight-decay", type=float, default=1e-4,
+                        help="AdamW weight decay")
     args = parser.parse_args()
 
     device = config.get_device(args.device)
@@ -555,7 +559,7 @@ def main():
 
     # Model
     ModelClass = StructuredPoseTransformer if args.structured else PoseTransformer
-    model = ModelClass().to(device)
+    model = ModelClass(dropout=args.dropout).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {n_params:,} parameters")
     print(f"  Hidden dim: {config.MODEL_HIDDEN_DIM}, "
@@ -570,7 +574,7 @@ def main():
         print(f"  Hold proximity weight: {args.hold_weight}")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=1e-4
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
@@ -656,6 +660,8 @@ def main():
                     "scheduled_sampling_max": args.scheduled_sampling_max,
                     "structured": args.structured,
                     "hold_weight": args.hold_weight,
+                    "dropout": args.dropout,
+                    "weight_decay": args.weight_decay,
                 },
             }, args.checkpoint_dir / "best.pt")
 
@@ -716,6 +722,8 @@ def main():
             "scheduled_sampling_max": args.scheduled_sampling_max,
             "structured": args.structured,
             "hold_weight": args.hold_weight,
+            "dropout": args.dropout,
+            "weight_decay": args.weight_decay,
         },
     }, args.checkpoint_dir / "final.pt")
 
