@@ -391,10 +391,10 @@ class PoseDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        context, delta, h_pos, h_roles, mask, disp = self.samples[idx]
+        context, target_abs, h_pos, h_roles, mask, disp = self.samples[idx]
         return (
             torch.from_numpy(context),
-            torch.from_numpy(delta),
+            torch.from_numpy(target_abs),
             torch.from_numpy(h_pos),
             torch.from_numpy(h_roles.copy()),
             torch.from_numpy(mask.copy()),
