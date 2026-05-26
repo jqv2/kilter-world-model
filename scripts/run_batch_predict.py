@@ -67,7 +67,7 @@ def compute_rollout_error(
         if pred_idx >= len(predicted):
             break
         pred = predicted[pred_idx]
-        gt = gt_poses[t]
+        gt = gt_poses[t][config.CLIMBING_KEYPOINT_INDICES]
         err = np.linalg.norm(pred - gt, axis=1).mean()
         errors.append(err)
 
@@ -166,7 +166,8 @@ def main():
 
         # Rollout
         if is_structured:
-            hold_seq = derive_hold_sequence(np.array(gt_poses), route_holds)
+            gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            hold_seq = derive_hold_sequence(gt_filtered, route_holds)
             if len(hold_seq) == 0:
                 print("SKIP (no hold sequence)")
                 continue
@@ -195,6 +196,7 @@ def main():
             "poses": poses,
             "route_holds": route_holds,
             "fps": fps,
+            "gt_poses_climbing": [p[config.CLIMBING_KEYPOINT_INDICES] for p in gt_poses],
             "target_positions": target_positions if is_structured else None,
         })
 
@@ -231,6 +233,7 @@ def main():
                     route_holds=r["route_holds"],
                     fps=round(r["fps"] * args.speed),
                     title=title,
+                    gt_poses=r["gt_poses_climbing"],
                 )
             else:
                 render_pose_video(
@@ -239,6 +242,7 @@ def main():
                     route_holds=r["route_holds"],
                     fps=round(r["fps"] * args.speed),
                     title=title,
+                    gt_poses=r["gt_poses_climbing"],
                 )
 
     # Save summary JSON

@@ -14,12 +14,12 @@ The transformer's self-attention lets pose tokens attend to hold tokens
 (learning which holds matter for the current movement) and to other pose
 tokens (learning motion dynamics).
 
-Input:  poses  (batch, context_window, 34) - flattened 17×2 keypoints
+Input:  poses  (batch, context_window, NUM_CLIMBING_KEYPOINTS * 2) - flattened keypoints
         holds  (batch, max_holds, 2)       - normalized (x, y) positions
         roles  (batch, max_holds)          - role IDs (12=start, 13=mid, 14=finish, 15=foot)
         hold_mask (batch, max_holds)       - True for padded positions
 
-Output: (batch, 34), predicted delta for next frame
+Output: (batch, NUM_CLIMBING_KEYPOINTS * 2), predicted delta for next frame
 """
 
 import torch
@@ -43,7 +43,7 @@ class PoseTransformer(nn.Module):
     Self-attention allows pose tokens to attend to holds and vice versa.
 
     Args:
-        pose_dim: Flattened pose dimension (17 keypoints × 2 coords = 34).
+        pose_dim: Flattened pose dimension (NUM_CLIMBING_KEYPOINTS × 2).
         hold_dim: Hold feature dimension (2 for normalized x, y).
         hidden_dim: Transformer hidden / embedding dimension.
         n_layers: Number of transformer encoder layers.
@@ -55,7 +55,7 @@ class PoseTransformer(nn.Module):
 
     def __init__(
         self,
-        pose_dim: int = config.NUM_KEYPOINTS * 2,
+        pose_dim: int = config.NUM_CLIMBING_KEYPOINTS * 2,
         hold_dim: int = 2,
         hidden_dim: int = config.MODEL_HIDDEN_DIM,
         n_layers: int = config.MODEL_LAYERS,
@@ -109,13 +109,13 @@ class PoseTransformer(nn.Module):
         Predict the pose delta for the next frame.
 
         Args:
-            poses: (batch, seq_len, 34) context window of flattened poses.
+            poses: (batch, seq_len, NUM_CLIMBING_KEYPOINTS * 2) context window of flattened poses.
             holds: (batch, n_holds, 2) normalized hold positions.
             roles: (batch, n_holds) role IDs.
             hold_mask: (batch, n_holds) True where holds are padding.
 
         Returns:
-            (batch, 34) predicted delta from the last frame in the window.
+            (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted delta from the last frame in the window.
         """
         B, S, _ = poses.shape
         _, H, _ = holds.shape
@@ -165,7 +165,7 @@ class PoseTransformer(nn.Module):
         Predict the next frame's absolute pose (current + delta).
 
         Returns:
-            (batch, 34) predicted absolute pose for the next frame.
+            (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute pose for the next frame.
         """
         delta = self.forward(poses, holds, roles, hold_mask)
         return poses[:, -1, :] + delta
@@ -183,7 +183,7 @@ class StructuredPoseTransformer(nn.Module):
     in the attention window.
 
     Args:
-        pose_dim: Flattened pose dimension (34).
+        pose_dim: Flattened pose dimension (NUM_CLIMBING_KEYPOINTS * 2).
         hold_dim: Hold feature dimension (2).
         hidden_dim: Transformer hidden dimension.
         n_layers: Number of transformer encoder layers.
@@ -195,7 +195,7 @@ class StructuredPoseTransformer(nn.Module):
 
     def __init__(
         self,
-        pose_dim: int = config.NUM_KEYPOINTS * 2,
+        pose_dim: int = config.NUM_CLIMBING_KEYPOINTS * 2,
         hold_dim: int = 2,
         hidden_dim: int = config.MODEL_HIDDEN_DIM,
         n_layers: int = config.MODEL_LAYERS,
@@ -253,14 +253,14 @@ class StructuredPoseTransformer(nn.Module):
         Predict the pose delta for the next frame.
 
         Args:
-            poses: (batch, seq_len, 34) context window of flattened poses.
+            poses: (batch, seq_len, NUM_CLIMBING_KEYPOINTS * 2) context window of flattened poses.
             holds: (batch, n_holds, 2) normalized hold positions.
             roles: (batch, n_holds) role IDs.
             target_pos: (batch, 2) normalized target hold (x, y).
             hold_mask: (batch, n_holds) True where holds are padding.
 
         Returns:
-            (batch, 34) predicted delta from the last frame in the window.
+            (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted delta from the last frame in the window.
         """
         B, S, _ = poses.shape
         _, H, _ = holds.shape
@@ -315,7 +315,7 @@ class StructuredPoseTransformer(nn.Module):
         Predict the next frame's absolute pose (current + delta).
 
         Returns:
-            (batch, 34) predicted absolute pose for the next frame.
+            (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute pose for the next frame.
         """
         delta = self.forward(poses, holds, roles, target_pos, hold_mask)
         return poses[:, -1, :] + delta
@@ -329,7 +329,8 @@ class PoseDataset(torch.utils.data.Dataset):
     displacement) tuple.
 
     Args:
-        sequences: List of (T_i, 17, 2) arrays in board space.
+        sequences: List of (T_i, 17, 2) arrays in board space
+            (filtered to NUM_CLIMBING_KEYPOINTS climbing keypoints internally).
         scores: List of (T_i, 17) confidence arrays.
         hold_positions: List of (N_i, 2) arrays of normalized hold positions.
         hold_roles: List of (N_i,) arrays of role IDs.
@@ -361,7 +362,8 @@ class PoseDataset(torch.utils.data.Dataset):
             sequences, scores, hold_positions, hold_roles
         ):
             T = seq.shape[0]
-            flat = seq.reshape(T, -1).astype("float32")
+            seq_filtered = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            flat = seq_filtered.reshape(T, -1).astype("float32")
 
             padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles, max_holds)
 
@@ -411,7 +413,8 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
     automatically from ground truth poses.
 
     Args:
-        sequences: List of (T_i, 17, 2) arrays in board space.
+        sequences: List of (T_i, 17, 2) arrays in board space
+            (filtered to NUM_CLIMBING_KEYPOINTS climbing keypoints internally).
         scores: List of (T_i, 17) confidence arrays.
         hold_positions: List of (N_i, 2) arrays of normalized hold positions.
         hold_roles: List of (N_i,) arrays of role IDs.
@@ -444,13 +447,14 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
             sequences, scores, hold_positions, hold_roles, route_holds
         ):
             T = seq.shape[0]
-            flat = seq.reshape(T, -1).astype("float32")
+            seq_filtered = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            flat = seq_filtered.reshape(T, -1).astype("float32")
 
             # Derive hold sequence and per-frame targets (board space)
-            hold_seq = derive_hold_sequence(seq, r_holds)
+            hold_seq = derive_hold_sequence(seq_filtered, r_holds)
             if len(hold_seq) == 0:
                 continue
-            targets_board = extract_move_targets(seq, hold_seq)
+            targets_board = extract_move_targets(seq_filtered, hold_seq)
 
             targets_norm = normalize_board_coords(targets_board)
 
@@ -497,13 +501,13 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
 # Bone pairs for length constraints: (parent_idx, child_idx)
 # Rigid body segments only (excludes noisy head keypoints).
 BONE_PAIRS = [
-    (5, 7), (7, 9),    # left upper arm, left forearm
-    (6, 8), (8, 10),   # right upper arm, right forearm
-    (5, 11), (6, 12),  # left torso, right torso
-    (11, 12),           # hips
-    (5, 6),             # shoulders
-    (11, 13), (13, 15), # left thigh, left shin
-    (12, 14), (14, 16), # right thigh, right shin
+    (0, 2), (2, 4),     # left upper arm, left forearm
+    (1, 3), (3, 5),     # right upper arm, right forearm
+    (0, 6), (1, 7),     # left torso, right torso
+    (6, 7),              # hips
+    (0, 1),              # shoulders
+    (6, 8), (8, 10),    # left thigh, left shin
+    (7, 9), (9, 11),    # right thigh, right shin
 ]
 
 
@@ -520,8 +524,8 @@ def weighted_mse_loss(
     rather than learning to predict "stay still."
 
     Args:
-        predicted: (batch, 34) predicted absolute poses.
-        target: (batch, 34) ground truth absolute poses.
+        predicted: (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute poses.
+        target: (batch, NUM_CLIMBING_KEYPOINTS * 2) ground truth absolute poses.
         displacement: (batch,) mean keypoint displacement for each sample.
 
     Returns:
@@ -545,14 +549,14 @@ def hold_proximity_loss(
     so the model is rewarded for any limb reaching the hold.
 
     Args:
-        predicted: (batch, 34) predicted absolute poses.
+        predicted: (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute poses.
         target_hold: (batch, 2) normalized target hold position.
 
     Returns:
         Scalar mean minimum-limb-to-hold distance.
     """
-    poses = predicted.reshape(-1, 17, 2)
-    limb_positions = poses[:, [9, 10, 15, 16], :]  # (batch, 4, 2)
+    poses = predicted.reshape(-1, config.NUM_CLIMBING_KEYPOINTS, 2)
+    limb_positions = poses[:, [4, 5, 10, 11], :]  # wrists and ankles in climbing indices
     target = target_hold.unsqueeze(1)  # (batch, 1, 2)
     distances = (limb_positions - target).norm(dim=2)  # (batch, 4)
     return distances.min(dim=1).values.mean()
@@ -563,12 +567,12 @@ def compute_bone_lengths(poses_flat: torch.Tensor) -> torch.Tensor:
     Compute bone lengths for all rigid segments.
 
     Args:
-        poses_flat: (batch, 34) flattened keypoints.
+        poses_flat: (batch, NUM_CLIMBING_KEYPOINTS * 2) flattened keypoints.
 
     Returns:
         (batch, n_bones) bone lengths.
     """
-    poses = poses_flat.reshape(-1, 17, 2)
+    poses = poses_flat.reshape(-1, config.NUM_CLIMBING_KEYPOINTS, 2)
     lengths = []
     for i, j in BONE_PAIRS:
         diff = poses[:, i, :] - poses[:, j, :]
@@ -591,13 +595,13 @@ def project_bone_lengths(
     to produce valid skeletons directly.
 
     Args:
-        poses_flat: (batch, 34) predicted absolute poses.
+        poses_flat: (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute poses.
         max_lengths: (n_bones,) maximum valid length per bone.
 
     Returns:
-        (batch, 34) projected poses with no bone exceeding its max.
+        (batch, NUM_CLIMBING_KEYPOINTS * 2) projected poses with no bone exceeding its max.
     """
-    poses = poses_flat.reshape(-1, 17, 2).clone()
+    poses = poses_flat.reshape(-1, config.NUM_CLIMBING_KEYPOINTS, 2).clone()
 
     for bone_idx, (parent, child) in enumerate(BONE_PAIRS):
         diff = poses[:, child, :] - poses[:, parent, :]
@@ -605,7 +609,7 @@ def project_bone_lengths(
         scale = (max_lengths[bone_idx] / current_len).clamp(max=1.0)
         poses[:, child, :] = poses[:, parent, :] + diff * scale
 
-    return poses.reshape(-1, 34)
+    return poses.reshape(-1, config.NUM_CLIMBING_KEYPOINTS * 2)
 
 
 def bone_length_loss(
@@ -619,8 +623,8 @@ def bone_length_loss(
     stretching/shrinking without constraining joint positions.
 
     Args:
-        predicted: (batch, 34) predicted absolute poses.
-        target: (batch, 34) ground truth absolute poses.
+        predicted: (batch, NUM_CLIMBING_KEYPOINTS * 2) predicted absolute poses.
+        target: (batch, NUM_CLIMBING_KEYPOINTS * 2) ground truth absolute poses.
 
     Returns:
         Scalar mean bone-length deviation.
@@ -645,11 +649,11 @@ def enforce_bone_lengths(
     pulling the child inward when the bone exceeds its max length.
 
     Args:
-        pose: (17, 2) predicted keypoints.
+        pose: (N_kp, 2) predicted keypoints.
         max_lengths: (n_bones,) maximum valid length for each bone in BONE_PAIRS.
 
     Returns:
-        (17, 2) corrected pose with no bone exceeding its max length.
+        (N_kp, 2) corrected pose with no bone exceeding its max length.
     """
     out = pose.copy()
 
@@ -683,10 +687,11 @@ def compute_reference_bone_lengths(
     """
     all_lengths = []
     for seq in sequences:
-        for t in range(seq.shape[0]):
+        seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :] if seq.shape[1] > config.NUM_CLIMBING_KEYPOINTS else seq
+        for t in range(seq_f.shape[0]):
             lengths = []
             for i, j in BONE_PAIRS:
-                diff = seq[t, i] - seq[t, j]
+                diff = seq_f[t, i] - seq_f[t, j]
                 lengths.append(np.linalg.norm(diff))
             all_lengths.append(lengths)
     return np.percentile(all_lengths, percentile, axis=0).astype(np.float32)

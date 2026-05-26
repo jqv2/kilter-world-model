@@ -42,9 +42,15 @@ from evaluation.visualize import (
     autoregressive_rollout,
     autoregressive_rollout_structured,
 )
-from models.world_model import PoseTransformer, enforce_bone_lengths, compute_reference_bone_lengths, extract_move_targets, StructuredPoseTransformer
+from models.world_model import (
+    PoseTransformer,
+    enforce_bone_lengths,
+    compute_reference_bone_lengths,
+    extract_move_targets,
+    StructuredPoseTransformer,
+    derive_hold_sequence,
+)
 from evaluation.baselines import greedy_ik_baseline_predictions
-from pipeline.routes import holds_to_array
 
 
 def load_gt_poses(video_stem: str) -> tuple[list[np.ndarray], float]:
@@ -90,6 +96,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> PoseTransformer |
 
     ModelClass = StructuredPoseTransformer if is_structured else PoseTransformer
     model = ModelClass(
+        pose_dim=model_config.get("pose_dim", config.NUM_CLIMBING_KEYPOINTS * 2),
         hidden_dim=model_config.get("hidden_dim", config.MODEL_HIDDEN_DIM),
         n_layers=model_config.get("n_layers", config.MODEL_LAYERS),
         n_heads=model_config.get("n_heads", config.MODEL_HEADS),
@@ -179,10 +186,10 @@ def main():
         if route_holds is None:
             print("Error: --climb is required for gt_moves mode (need holds for move detection)")
             sys.exit(1)
-        from models.world_model import derive_hold_sequence
-        hold_seq = derive_hold_sequence(np.array(gt_poses), route_holds)
+        gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
+        hold_seq = derive_hold_sequence(gt_filtered, route_holds)
         print(f"  Derived hold sequence: {len(hold_seq)} holds visited")
-        targets_board = extract_move_targets(np.array(gt_poses), hold_seq)
+        targets_board = extract_move_targets(gt_filtered, hold_seq)
         title_parts.append("- move targets")
 
         if args.output:
@@ -227,8 +234,8 @@ def main():
         is_structured = isinstance(model, StructuredPoseTransformer)
         hold_seq = None
         if is_structured:
-            from models.world_model import derive_hold_sequence
-            hold_seq = derive_hold_sequence(np.array(gt_poses), route_holds)
+            gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            hold_seq = derive_hold_sequence(gt_filtered, route_holds)
             print(f"  Derived hold sequence: {len(hold_seq)} holds visited")
 
         ref_bones = compute_reference_bone_lengths([np.array(gt_poses)])
@@ -273,6 +280,8 @@ def main():
             route_holds=route_holds,
             fps=round(fps * args.speed),
             title=title,
+            gt_poses=([p[config.CLIMBING_KEYPOINT_INDICES] for p in gt_poses]
+                      if args.mode == "predict" else None),
         )
     else:
         render_pose_video(
@@ -281,6 +290,8 @@ def main():
             route_holds=route_holds,
             fps=round(fps * args.speed),
             title=title,
+            gt_poses=([p[config.CLIMBING_KEYPOINT_INDICES] for p in gt_poses]
+                      if args.mode == "predict" else None),
         )
 
 

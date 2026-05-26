@@ -174,11 +174,11 @@ def _simulate(
     if verbose:
         print(f"  Greedy baseline: {len(target_queue)} targets over {T} frames")
 
-    limb_on_hold: dict[int, int | None] = {lid: None for lid in config.LIMB_KEYPOINTS}
+    limb_on_hold: dict[int, int | None] = {lid: None for lid in config.LIMB_KEYPOINTS_COCO}
     current_pose = start_pose.copy()
 
     # 0. Initialize: Snap limbs logically to starting holds
-    for limb_id, kp_idx in config.LIMB_KEYPOINTS.items():
+    for limb_id, kp_idx in config.LIMB_KEYPOINTS_COCO.items():
         candidates = get_valid_holds(limb_id)
         if candidates:
             r, m, e = _LIMB_CHAINS[limb_id]
@@ -247,7 +247,7 @@ def _simulate(
             candidate_limbs = config.FOOT_LIMBS if hold_role == 15 else config.HAND_LIMBS
             candidate_limbs = sorted(
                 candidate_limbs,
-                key=lambda lid: np.linalg.norm(current_pose[config.LIMB_KEYPOINTS[lid]] - hold_positions[tentative_hold_idx])
+                key=lambda lid: np.linalg.norm(current_pose[config.LIMB_KEYPOINTS_COCO[lid]] - hold_positions[tentative_hold_idx])
             )
 
             valid_limb = None
@@ -262,7 +262,7 @@ def _simulate(
                 
                 for free_lid in candidate_limbs:
                     if limb_on_hold[free_lid] is None:
-                        ee_pos = current_pose[config.LIMB_KEYPOINTS[free_lid]]
+                        ee_pos = current_pose[config.LIMB_KEYPOINTS_COCO[free_lid]]
                         for h in get_valid_holds(free_lid):
                             if h != tentative_hold_idx:
                                 d = np.linalg.norm(ee_pos - hold_positions[h])
@@ -361,7 +361,7 @@ def _simulate(
                     pool = config.HAND_LIMBS if crit_type == 'hand' else config.FOOT_LIMBS
                     for free_lid in pool:
                         if limb_on_hold[free_lid] is None and free_lid != active_limb:
-                            ee_pos = current_pose[config.LIMB_KEYPOINTS[free_lid]]
+                            ee_pos = current_pose[config.LIMB_KEYPOINTS_COCO[free_lid]]
                             r = _LIMB_CHAINS[free_lid][0]
                             for h in get_valid_holds(free_lid):
                                 if h != active_hold_idx and np.linalg.norm(current_pose[r] - hold_positions[h]) <= reach[free_lid] * 0.95:
@@ -411,12 +411,12 @@ def _simulate(
                     finish_frame = frame
 
         # 4. Smooth Opportunistic grab for ALL free limbs (NO TELEPORTING)
-        for lid in config.LIMB_KEYPOINTS:
+        for lid in config.LIMB_KEYPOINTS_COCO:
             if limb_on_hold[lid] is None and lid != active_limb:
                 r, m, e = _LIMB_CHAINS[lid]
                 possible = [h for h in get_valid_holds(lid) if h != active_hold_idx and np.linalg.norm(current_pose[r] - hold_positions[h]) <= reach[lid] * 0.99]
                 if possible:
-                    ee_pos = current_pose[config.LIMB_KEYPOINTS[lid]]
+                    ee_pos = current_pose[config.LIMB_KEYPOINTS_COCO[lid]]
                     best_h = min(possible, key=lambda h: np.linalg.norm(ee_pos - hold_positions[h]))
                     dist_to_h = np.linalg.norm(ee_pos - hold_positions[best_h])
                     

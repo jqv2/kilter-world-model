@@ -85,8 +85,12 @@ def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds=None):
         else:
             preds = predict_fn(gt_frames)
 
+        idx = config.CLIMBING_KEYPOINT_INDICES
         errors = per_frame_errors(
-            preds, gt_frames, list(sc), config.KEYPOINT_CONFIDENCE_THRESHOLD
+            [p[idx] for p in preds],
+            [g[idx] for g in gt_frames],
+            [s[idx] for s in list(sc)],
+            config.KEYPOINT_CONFIDENCE_THRESHOLD,
         )
         all_errors.append(errors)
 

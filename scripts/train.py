@@ -57,12 +57,14 @@ def evaluate_teacher_forcing(
 
     with torch.no_grad():
         for seq, sc, h_pos, h_roles in zip(sequences, scores, holds, roles):
-            T = seq.shape[0]
+            seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
+            T = seq_f.shape[0]
             if T <= config.CONTEXT_WINDOW * config.ROLLOUT_STRIDE:
                 continue
 
             flat = torch.from_numpy(
-                seq.reshape(T, -1).astype("float32")
+                seq_f.reshape(T, -1).astype("float32")
             ).to(device)
 
             padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
@@ -81,11 +83,11 @@ def evaluate_teacher_forcing(
                 pred_abs = model.predict_absolute(
                     context, h_pos_t, h_roles_t, mask_t
                 ).squeeze(0).cpu().numpy()
-                predicted_frames.append(pred_abs.reshape(17, 2))
+                predicted_frames.append(pred_abs.reshape(config.NUM_CLIMBING_KEYPOINTS, 2))
                 gt_indices.append(t)
 
-            gt_slice = [seq[t] for t in gt_indices]
-            conf_slice = [sc[t] for t in gt_indices]
+            gt_slice = [seq_f[t] for t in gt_indices]
+            conf_slice = [sc_f[t] for t in gt_indices]
 
             errors = np.array([
                 mean_keypoint_error(predicted_frames[i], gt_slice[i], conf_slice[i])
@@ -119,11 +121,13 @@ def evaluate_autoregressive(
 
     with torch.no_grad():
         for seq, sc, h_pos, h_roles in zip(sequences, scores, holds, roles):
-            T = seq.shape[0]
+            seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
+            T = seq_f.shape[0]
             if T <= config.CONTEXT_WINDOW * config.ROLLOUT_STRIDE + config.ROLLOUT_STRIDE:
                 continue
 
-            flat = seq.reshape(T, -1).astype("float32")
+            flat = seq_f.reshape(T, -1).astype("float32")
 
             padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
 
@@ -147,7 +151,7 @@ def evaluate_autoregressive(
                 pred_abs = model.predict_absolute(
                     context, h_pos_t, h_roles_t, mask_t
                 ).squeeze(0).cpu().numpy()
-                pred_pose = pred_abs.reshape(17, 2)
+                pred_pose = pred_abs.reshape(config.NUM_CLIMBING_KEYPOINTS, 2)
                 if max_bone_lengths is not None:
                     pred_pose = enforce_bone_lengths(pred_pose, max_bone_lengths)
                     pred_abs = pred_pose.reshape(-1)
@@ -155,8 +159,8 @@ def evaluate_autoregressive(
                 history.append(pred_abs)
                 gt_indices.append(t)
 
-            gt_slice = [seq[t] for t in gt_indices]
-            conf_slice = [sc[t] for t in gt_indices]
+            gt_slice = [seq_f[t] for t in gt_indices]
+            conf_slice = [sc_f[t] for t in gt_indices]
 
             errors = np.array([
                 mean_keypoint_error(predicted_frames[i], gt_slice[i], conf_slice[i])
@@ -308,12 +312,14 @@ def evaluate_teacher_forcing_structured(
         for seq, sc, h_pos, h_roles, r_holds in zip(
             sequences, scores, holds, roles, route_holds
         ):
-            T = seq.shape[0]
+            seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
+            T = seq_f.shape[0]
             if T <= config.CONTEXT_WINDOW * config.ROLLOUT_STRIDE:
                 continue
 
             flat = torch.from_numpy(
-                seq.reshape(T, -1).astype("float32")
+                seq_f.reshape(T, -1).astype("float32")
             ).to(device)
 
             padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
@@ -323,10 +329,10 @@ def evaluate_teacher_forcing_structured(
             mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
 
             # Derive targets from GT
-            hold_seq = derive_hold_sequence(seq, r_holds)
+            hold_seq = derive_hold_sequence(seq_f, r_holds)
             if len(hold_seq) == 0:
                 continue
-            targets_board = extract_move_targets(seq, hold_seq)
+            targets_board = extract_move_targets(seq_f, hold_seq)
             targets_norm = normalize_board_coords(targets_board)
 
             stride = config.ROLLOUT_STRIDE
@@ -341,11 +347,11 @@ def evaluate_teacher_forcing_structured(
                 pred_abs = model.predict_absolute(
                     context, h_pos_t, h_roles_t, tgt, mask_t
                 ).squeeze(0).cpu().numpy()
-                predicted_frames.append(pred_abs.reshape(17, 2))
+                predicted_frames.append(pred_abs.reshape(config.NUM_CLIMBING_KEYPOINTS, 2))
                 gt_indices.append(t)
 
-            gt_slice = [seq[t] for t in gt_indices]
-            conf_slice = [sc[t] for t in gt_indices]
+            gt_slice = [seq_f[t] for t in gt_indices]
+            conf_slice = [sc_f[t] for t in gt_indices]
 
             errors = np.array([
                 mean_keypoint_error(predicted_frames[i], gt_slice[i], conf_slice[i])
@@ -382,12 +388,14 @@ def evaluate_autoregressive_structured(
         for seq, sc, h_pos, h_roles, r_holds in zip(
             sequences, scores, holds, roles, route_holds
         ):
-            T = seq.shape[0]
+            seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+            sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
+            T = seq_f.shape[0]
             stride = config.ROLLOUT_STRIDE
             if T <= config.CONTEXT_WINDOW * stride + stride:
                 continue
 
-            flat = seq.reshape(T, -1).astype("float32")
+            flat = seq_f.reshape(T, -1).astype("float32")
 
             padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
 
@@ -396,7 +404,7 @@ def evaluate_autoregressive_structured(
             mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
 
             # Derive hold sequence from GT (this is the "plan")
-            hold_seq = derive_hold_sequence(seq, r_holds)
+            hold_seq = derive_hold_sequence(seq_f, r_holds)
             if len(hold_seq) == 0:
                 continue
 
@@ -424,7 +432,7 @@ def evaluate_autoregressive_structured(
                 pred_abs = model.predict_absolute(
                     context, h_pos_t, h_roles_t, tgt_t, mask_t
                 ).squeeze(0).cpu().numpy()
-                pred_pose = pred_abs.reshape(17, 2)
+                pred_pose = pred_abs.reshape(config.NUM_CLIMBING_KEYPOINTS, 2)
                 if max_bone_lengths is not None:
                     pred_pose = enforce_bone_lengths(pred_pose, max_bone_lengths)
                     pred_abs = pred_pose.reshape(-1)
@@ -449,8 +457,8 @@ def evaluate_autoregressive_structured(
                     else:
                         consecutive_near = 0
 
-            gt_slice = [seq[t] for t in gt_indices]
-            conf_slice = [sc[t] for t in gt_indices]
+            gt_slice = [seq_f[t] for t in gt_indices]
+            conf_slice = [sc_f[t] for t in gt_indices]
 
             errors = np.array([
                 mean_keypoint_error(predicted_frames[i], gt_slice[i], conf_slice[i])
@@ -662,6 +670,7 @@ def main():
                     "hold_weight": args.hold_weight,
                     "dropout": args.dropout,
                     "weight_decay": args.weight_decay,
+                    "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
                 },
             }, args.checkpoint_dir / "best.pt")
 
@@ -724,6 +733,7 @@ def main():
             "hold_weight": args.hold_weight,
             "dropout": args.dropout,
             "weight_decay": args.weight_decay,
+            "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
         },
     }, args.checkpoint_dir / "final.pt")
 

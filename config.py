@@ -62,6 +62,10 @@ COCO_KEYPOINT_NAMES = [
     "right_ankle",      # 16
 ]
 
+# Keypoints used by the model (drop head: nose, eyes, ears)
+CLIMBING_KEYPOINT_INDICES = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+NUM_CLIMBING_KEYPOINTS = len(CLIMBING_KEYPOINT_INDICES)
+
 # Skeletal connections between keypoints for visualization
 COCO_SKELETON = [
     (0, 1), (0, 2), (1, 3), (2, 4),         # head
@@ -75,6 +79,16 @@ COCO_SKELETON = [
     (12, 14), (14, 16),                     # right leg
 ]
 
+# Skeleton connections for climbing keypoints only (indices into CLIMBING_KEYPOINT_INDICES)
+CLIMBING_SKELETON = [
+    (0, 1),              # shoulders
+    (0, 2), (2, 4),     # left arm
+    (1, 3), (3, 5),     # right arm
+    (0, 6), (1, 7),     # torso
+    (6, 7),              # hips
+    (6, 8), (8, 10),    # left leg
+    (7, 9), (9, 11),    # right leg
+]
 
 ########################
 # Video
@@ -133,6 +147,12 @@ ROLLOUT_STRIDE = 1              # temporal stride during autoregressive rollout 
 
 # Limb endpoint keypoint indices (wrists and ankles)
 LIMB_KEYPOINTS = {
+    0: 4,   # left hand  -> left_wrist (COCO idx 9, climbing idx 4)
+    1: 5,   # right hand -> right_wrist (COCO idx 10, climbing idx 5)
+    2: 10,  # left foot  -> left_ankle (COCO idx 15, climbing idx 10)
+    3: 11,  # right foot -> right_ankle (COCO idx 16, climbing idx 11)
+}
+LIMB_KEYPOINTS_COCO = {
     0: 9,   # left hand  -> left_wrist
     1: 10,  # right hand -> right_wrist
     2: 15,  # left foot  -> left_ankle

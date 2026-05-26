@@ -250,11 +250,13 @@ def draw_skeleton(
     joint_radius: int = 4,
 ) -> None:
     """
-    Draw a COCO skeleton on a board image (in-place).
+    Draw a skeleton on a board image (in-place).
+
+    Accepts either full COCO (17, 2) or climbing-only (NUM_CLIMBING_KEYPOINTS, 2) keypoints.
 
     Args:
         img: Board image (BGR).
-        keypoints: (17, 2) array of board-space coordinates.
+        keypoints: (17, 2) or (NUM_CLIMBING_KEYPOINTS, 2) array of board-space coordinates.
         scale: Pixels per board unit (must match render_board_image).
         pad: Padding in board units (must match render_board_image).
         skeleton_color: BGR color for skeleton lines.
@@ -262,13 +264,14 @@ def draw_skeleton(
         thickness: Line thickness in pixels.
         joint_radius: Joint circle radius in pixels.
     """
-    # Draw bones
-    for i, j in config.COCO_SKELETON:
+    n_kp = keypoints.shape[0]
+    skeleton = config.COCO_SKELETON if n_kp == 17 else config.CLIMBING_SKELETON
+
+    for i, j in skeleton:
         pt1 = board_to_pixel(keypoints[i, 0], keypoints[i, 1], scale, pad)
         pt2 = board_to_pixel(keypoints[j, 0], keypoints[j, 1], scale, pad)
         cv2.line(img, pt1, pt2, skeleton_color, thickness)
 
-    # Draw joints
     for kp in keypoints:
         pt = board_to_pixel(kp[0], kp[1], scale, pad)
         cv2.circle(img, pt, joint_radius, joint_color, -1)
@@ -282,6 +285,7 @@ def render_pose_video(
     title: str | None = None,
     scale: int = RENDER_SCALE,
     pad: int = RENDER_PAD,
+    gt_poses: list[np.ndarray] | None = None,
 ) -> None:
     """
     Render a sequence of poses as a video with skeleton overlay on the board.
@@ -294,6 +298,8 @@ def render_pose_video(
         title: Optional title text shown on the video.
         scale: Pixels per board unit.
         pad: Padding in board units.
+        gt_poses: Optional list of (17, 2) GT arrays. If provided, drawn
+            as a dimmer skeleton underneath the predicted skeleton.
     """
     all_holds = get_all_holds()
     board_img = render_board_image(route_holds, all_holds, scale, pad)
@@ -309,6 +315,14 @@ def render_pose_video(
 
     for frame_idx, pose in enumerate(poses):
         frame = board_img.copy()
+        if gt_poses is not None and frame_idx < len(gt_poses):
+            draw_skeleton(
+                frame, gt_poses[frame_idx], scale, pad,
+                skeleton_color=(80, 80, 80),
+                joint_color=(60, 60, 60),
+                thickness=1,
+                joint_radius=3,
+            )
         draw_skeleton(frame, pose, scale, pad)
 
         # Frame counter
@@ -362,6 +376,7 @@ def render_pose_video_with_targets(
     title: str | None = None,
     scale: int = RENDER_SCALE,
     pad: int = RENDER_PAD,
+    gt_poses: list[np.ndarray] | None = None,
 ) -> None:
     """
     Render poses with target hold overlay.
@@ -375,6 +390,8 @@ def render_pose_video_with_targets(
         title: Optional title text.
         scale: Pixels per board unit.
         pad: Padding in board units.
+        gt_poses: Optional list of (17, 2) GT arrays. If provided, drawn
+            as a dimmer skeleton underneath the predicted skeleton.
     """
     all_holds = get_all_holds()
     board_img = render_board_image(route_holds, all_holds, scale, pad)
@@ -390,6 +407,14 @@ def render_pose_video_with_targets(
 
     for frame_idx, pose in enumerate(poses):
         frame = board_img.copy()
+        if gt_poses is not None and frame_idx < len(gt_poses):
+            draw_skeleton(
+                frame, gt_poses[frame_idx], scale, pad,
+                skeleton_color=(80, 80, 80),
+                joint_color=(60, 60, 60),
+                thickness=1,
+                joint_radius=3,
+            )
         draw_skeleton(frame, pose, scale, pad)
         draw_target_hold(frame, target_positions[frame_idx], scale, pad)
 
@@ -437,7 +462,7 @@ def autoregressive_rollout(
             preventing skeleton explosion from error accumulation.
 
     Returns:
-        List of n_frames (17, 2) arrays: seed frames followed by predictions.
+        List of n_frames (NUM_CLIMBING_KEYPOINTS, 2) arrays: seed frames followed by predictions.
     """
     import torch
 
@@ -463,8 +488,8 @@ def autoregressive_rollout(
     stride = config.ROLLOUT_STRIDE
 
     n_seed = min(context_len * stride, len(seed_poses))
-    history = [seed_poses[t].reshape(-1).astype("float32") for t in range(n_seed)]
-    all_poses = [seed_poses[t] for t in range(n_seed)]
+    history = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES].reshape(-1).astype("float32") for t in range(n_seed)]
+    all_poses = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES] for t in range(n_seed)]
 
     with torch.no_grad():
         while len(all_poses) < n_frames:
@@ -477,17 +502,18 @@ def autoregressive_rollout(
             pred_flat = model.predict_absolute(
                 context, h_pos_t, h_roles_t, mask_t
             ).squeeze(0).cpu().numpy()
-            pred_pose = pred_flat.reshape(17, 2)
+            pred_pose = pred_flat.reshape(config.NUM_CLIMBING_KEYPOINTS, 2)
 
             if max_bone_lengths is not None:
                 pred_pose = enforce_bone_lengths(pred_pose, max_bone_lengths)
                 pred_flat = pred_pose.reshape(-1)
 
+            pred_flat = pred_pose.reshape(-1)
+            history.append(pred_flat)
+
             prev_pose = all_poses[-1]
             for s in range(1, stride + 1):
                 all_poses.append(prev_pose * (1 - s / stride) + pred_pose * (s / stride))
-
-            history.append(pred_flat)
 
     return all_poses[:n_frames]
 
@@ -522,12 +548,13 @@ def autoregressive_rollout_structured(
 
     Returns:
         Tuple of (poses, targets) where poses is a list of n_frames
-        (17, 2) arrays and targets is (n_frames, 2) board-space target
+        (NUM_CLIMBING_KEYPOINTS, 2) arrays and targets is (n_frames, 2) board-space target
         hold positions per frame.
     """
     import torch
     from pipeline.routes import BOARD_X_MIN, BOARD_X_MAX, BOARD_Y_MIN, BOARD_Y_MAX
-    targets_board = extract_move_targets(gt_poses, hold_sequence)
+    gt_filtered = gt_poses[:, config.CLIMBING_KEYPOINT_INDICES, :]
+    targets_board = extract_move_targets(gt_filtered, hold_sequence)
     targets_norm = targets_board.copy()
     targets_norm[:, 0] = (targets_norm[:, 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
     targets_norm[:, 1] = (targets_norm[:, 1] - BOARD_Y_MIN) / (BOARD_Y_MAX - BOARD_Y_MIN)
@@ -554,8 +581,8 @@ def autoregressive_rollout_structured(
     stride = config.ROLLOUT_STRIDE
 
     n_seed = min(context_len * stride, len(seed_poses))
-    history = [seed_poses[t].reshape(-1).astype("float32") for t in range(n_seed)]
-    all_poses = [seed_poses[t] for t in range(n_seed)]
+    history = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES].reshape(-1).astype("float32") for t in range(n_seed)]
+    all_poses = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES] for t in range(n_seed)]
     
     # Initial target for seed frames
     initial_target = np.array([hold_sequence[0]["x"], hold_sequence[0]["y"]], dtype=np.float32)
@@ -580,18 +607,19 @@ def autoregressive_rollout_structured(
             pred_flat = model.predict_absolute(
                 context, h_pos_t, h_roles_t, tgt_t, mask_t
             ).squeeze(0).cpu().numpy()
-            pred_pose = pred_flat.reshape(17, 2)
+            pred_pose = pred_flat.reshape(config.NUM_CLIMBING_KEYPOINTS, 2)
 
             if max_bone_lengths is not None:
                 pred_pose = enforce_bone_lengths(pred_pose, max_bone_lengths)
                 pred_flat = pred_pose.reshape(-1)
+            
+            pred_flat = pred_pose.reshape(-1)
+            history.append(pred_flat)
 
             prev_pose = all_poses[-1]
             for s in range(1, stride + 1):
                 all_poses.append(prev_pose * (1 - s / stride) + pred_pose * (s / stride))
                 all_targets.append(tgt_board_frame.copy())
-
-            history.append(pred_flat)
             
             step_count += 1
 
