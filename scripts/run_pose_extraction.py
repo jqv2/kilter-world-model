@@ -49,10 +49,14 @@ def extract_video_poses(video_path: Path, models: dict, show: bool = False, save
     """
     Run pose extraction on every frame of a video.
 
+    Overlay videos are saved to data/poses/ preserving the subfolder
+    structure relative to data/raw/.
+
     Args:
-        video_path: Path to the input video file.
+        video_path: Path to the input video file (must be under RAW_VIDEO_DIR).
         models: Dict returned by load_models().
         show: If True, display annotated frames in a window.
+        save_video: If True, write an overlay video alongside the JSON.
 
     Returns:
         Dict containing metadata and per-frame pose data.
@@ -67,7 +71,8 @@ def extract_video_poses(video_path: Path, models: dict, show: bool = False, save
 
     writer = None
     if save_video:
-        out_path = video_path.parent.parent / "poses" / f"{video_path.stem}_overlay.mp4"
+        rel = video_path.relative_to(config.RAW_VIDEO_DIR)
+        out_path = config.POSES_DIR / rel.parent / f"{video_path.stem}_overlay.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -176,20 +181,24 @@ def _draw_pose(bgr_frame: np.ndarray, result: dict) -> None:
             
 def iter_unprocessed_videos(raw_dir: Path, poses_dir: Path, save_video: bool = False) -> list[tuple[Path, Path, bool]]:
     """
-    Find video files in raw_dir that still need processing.
+    Find video files in raw_dir (including subfolders) that still need processing.
+
+    Preserves subfolder structure: a video at raw/session1/climb.MOV
+    produces poses/session1/climb.json.
 
     Returns:
         List of (video_path, json_output_path, overlay_only) tuples.
         overlay_only is True when the JSON exists but the overlay video doesn't.
     """
     videos = sorted(
-        p for p in raw_dir.iterdir()
+        p for p in raw_dir.rglob("*")
         if p.suffix.lower() in config.VIDEO_EXTENSIONS
     )
     jobs = []
     for v in videos:
-        json_path = poses_dir / f"{v.stem}.json"
-        overlay_path = poses_dir / f"{v.stem}_overlay.mp4"
+        rel = v.relative_to(raw_dir)
+        json_path = poses_dir / rel.parent / f"{v.stem}.json"
+        overlay_path = poses_dir / rel.parent / f"{v.stem}_overlay.mp4"
         json_exists = json_path.exists()
         overlay_exists = overlay_path.exists()
         if not json_exists:
@@ -214,7 +223,8 @@ def render_overlay_from_json(video_path: Path, json_path: Path) -> None:
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-    out_path = config.POSES_DIR / f"{video_path.stem}_overlay.mp4"
+    rel = video_path.relative_to(config.RAW_VIDEO_DIR)
+    out_path = config.POSES_DIR / rel.parent / f"{video_path.stem}_overlay.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
@@ -283,7 +293,11 @@ def main():
         if not args.video.exists():
             print(f"Error: Video not found: {args.video}")
             sys.exit(1)
-        output_path = config.POSES_DIR / f"{args.video.stem}.json"
+        try:
+            rel = args.video.relative_to(config.RAW_VIDEO_DIR)
+            output_path = config.POSES_DIR / rel.parent / f"{args.video.stem}.json"
+        except ValueError:
+            output_path = config.POSES_DIR / f"{args.video.stem}.json"
         jobs = [(args.video, output_path, False)]
 
     # Only load models if at least one job needs full extraction
