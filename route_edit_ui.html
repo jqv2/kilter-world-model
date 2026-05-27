@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Route Hold Editor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a1a; color: #f8f8f2; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar { width: 260px; background: #16213e; border-right: 1px solid #333; display: flex; flex-direction: column; }
+  .sidebar-header { padding: 12px; border-bottom: 1px solid #333; }
+  .sidebar-header h2 { font-size: 15px; margin-bottom: 8px; }
+  .filter-row { display: flex; gap: 4px; }
+  .filter-btn { background: none; border: 1px solid #444; color: #888; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .filter-btn.active { border-color: #8be9fd; color: #8be9fd; }
+  .video-list { flex: 1; overflow-y: auto; }
+  .video-item { padding: 8px 12px; border-bottom: 1px solid #1a1a2e; cursor: pointer; font-size: 13px; }
+  .video-item:hover { background: #1a1a3e; }
+  .video-item.active { background: #0f3460; border-left: 3px solid #8be9fd; }
+  .video-item .name { color: #f8f8f2; }
+  .video-item .route { color: #888; font-size: 11px; margin-top: 2px; }
+  .video-item .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
+  .video-item .badge.done { background: #1a3a1a; color: #50fa7b; }
+  .video-item .badge.pending { background: #3a3a1a; color: #f1fa8c; }
+
+  /* Main area */
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .toolbar { padding: 8px 16px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .toolbar .title { font-weight: 600; }
+  .toolbar button { background: none; border: 1px solid #444; color: #ccc; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .toolbar button:hover { background: #1a1a3e; }
+  .toolbar .save-btn { border-color: #50fa7b; color: #50fa7b; }
+  .toolbar .save-btn:hover { background: #1a3a1a; }
+  .nav-btns { margin-left: auto; display: flex; gap: 4px; }
+
+  /* Video area */
+  .video-area { flex: 1; display: flex; overflow: hidden; }
+  .video-container { flex: 1; position: relative; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .video-container video { max-width: 100%; max-height: 100%; }
+  .video-container canvas { position: absolute; pointer-events: none; }
+  .video-container canvas.interactive { pointer-events: auto; cursor: crosshair; }
+
+  /* Hold list panel */
+  .holds-panel { width: 220px; background: #16213e; border-left: 1px solid #333; display: flex; flex-direction: column; }
+  .holds-header { padding: 8px 12px; border-bottom: 1px solid #333; font-size: 13px; font-weight: 600; }
+  .holds-list { flex: 1; overflow-y: auto; }
+  .hold-item { padding: 6px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1a1a2e; cursor: pointer; }
+  .hold-item:hover { background: #1a1a3e; }
+  .hold-item.excluded { opacity: 0.4; text-decoration: line-through; }
+  .hold-item .role-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+
+  /* Playback controls */
+  .playback-bar { padding: 8px 16px; border-top: 1px solid #333; display: flex; align-items: center; gap: 12px; }
+  .playback-bar input[type=range] { flex: 1; }
+  .playback-bar button { background: none; border: 1px solid #444; color: #ccc; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .playback-bar .time { font-size: 12px; color: #888; min-width: 80px; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #50fa7b; color: #000; padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 200; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h2>Route Hold Editor</h2>
+    <div class="filter-row">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pending">Pending</button>
+      <button class="filter-btn" data-filter="done">Done</button>
+    </div>
+  </div>
+  <div class="video-list" id="videoList"></div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <span class="title" id="videoTitle">Select a video</span>
+    <button id="modeBtn" style="border-color:#f1fa8c; color:#f1fa8c;">Mode: Include</button>
+    <button class="save-btn" id="saveBtn" disabled>Save Edits</button>
+    <div class="nav-btns">
+      <button id="prevBtn">← Prev</button>
+      <button id="nextUneditedBtn">Next unedited</button>
+      <button id="nextBtn">Next →</button>
+    </div>
+  </div>
+  <div class="video-area">
+    <div class="video-container" id="videoContainer">
+      <video id="warpedVideo" muted></video>
+      <canvas id="overlayCanvas" class="interactive"></canvas>
+    </div>
+    <div class="holds-panel">
+      <div class="holds-header">
+        Route Holds
+        <span id="holdCount" style="float:right; color:#888; font-weight:normal;"></span>
+      </div>
+      <div class="holds-list" id="holdsList"></div>
+    </div>
+  </div>
+  <div class="playback-bar">
+    <button id="playPauseBtn">▶ Play</button>
+    <input type="range" id="scrubber" min="0" max="1000" value="0">
+    <span class="time" id="timeDisplay">0:00 / 0:00</span>
+    <button id="stepBackBtn">◀ -1</button>
+    <button id="stepFwdBtn">+1 ▶</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ===================== CONFIG =====================
+// Must match WARP_SCALE and pad used in warp_videos.py
+const WARP_SCALE = 4;
+const WARP_PAD = 4;
+const BOARD_LEFT = 0, BOARD_RIGHT = 144, BOARD_BOTTOM = 0, BOARD_TOP = 156;
+const KICKBOARD_Y = 12;
+
+// Map raw role IDs to canonical roles (matches role_map in routes.py)
+function canonicalRole(roleId) {
+  const map = {
+    12: 12, 13: 13, 14: 14, 15: 15,
+    20: 12, 21: 13, 22: 14, 23: 15,
+    24: 12, 25: 13, 26: 14, 27: 15,
+    28: 12, 29: 13, 30: 14, 31: 15,
+    32: 12, 33: 13, 34: 14, 35: 15,
+    42: 12, 43: 13, 44: 14, 45: 15,
+  };
+  return map[roleId] || 13;
+}
+
+// Role colors
+const ROLE_COLORS_RGB = {
+  12: '#00ff00',
+  13: '#00ffff',
+  14: '#ff00ff',
+  15: '#ffa500',
+};
+
+// ===================== STATE =====================
+let videos = [];
+let currentIdx = -1;
+let routeHolds = [];
+let allHolds = {};
+let filter = 'all';
+let editMode = 'include';  // 'exclude' = click to remove, 'include' = click to keep
+
+// ===================== BOARD COORD -> CANVAS PIXEL =====================
+function boardToCanvas(bx, by) {
+  const px = (bx - BOARD_LEFT + WARP_PAD) * WARP_SCALE;
+  const py = (BOARD_TOP + WARP_PAD - by) * WARP_SCALE;
+  return [px, py];
+}
+
+// ===================== INIT =====================
+async function init() {
+  const res = await fetch('/api/all_holds');
+  if (res.ok) {
+    const data = await res.json();
+    allHolds = data.holds || {};
+  }
+  await loadVideoList();
+
+  // Filter buttons
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      filter = btn.dataset.filter;
+      renderVideoList();
+    });
+  });
+
+  // Nav
+  document.getElementById('prevBtn').addEventListener('click', () => navigate(-1));
+  document.getElementById('nextBtn').addEventListener('click', () => navigate(1));
+  document.getElementById('nextUneditedBtn').addEventListener('click', navigateNextUnedited);
+  document.getElementById('saveBtn').addEventListener('click', saveEdits);
+
+  // Playback
+  const video = document.getElementById('warpedVideo');
+  const scrubber = document.getElementById('scrubber');
+  document.getElementById('playPauseBtn').addEventListener('click', togglePlay);
+  let scrubRAF = null;
+  scrubber.addEventListener('input', () => {
+      if (scrubRAF) return;
+      scrubRAF = requestAnimationFrame(() => {
+          video.currentTime = (scrubber.value / 1000) * video.duration;
+          scrubRAF = null;
+      });
+  });
+  video.addEventListener('timeupdate', updateScrubber);
+  video.addEventListener('loadedmetadata', () => {
+    updateScrubber();
+    resizeOverlay();
+  });
+  document.getElementById('stepBackBtn').addEventListener('click', () => stepFrame(-1));
+  document.getElementById('stepFwdBtn').addEventListener('click', () => stepFrame(1));
+
+  // Canvas click
+  document.getElementById('overlayCanvas').addEventListener('click', onCanvasClick);
+
+  // Resize
+  window.addEventListener('resize', resizeOverlay);
+  new ResizeObserver(resizeOverlay).observe(document.getElementById('videoContainer'));
+
+  // Keyboard
+  document.addEventListener('keydown', onKey);
+
+  // Edit mode
+  document.getElementById('modeBtn').addEventListener('click', () => {
+    if (editMode === 'exclude') {
+      editMode = 'include';
+      // Everything starts excluded; user clicks to include
+      routeHolds.forEach(h => { h.excluded = true; });
+      document.getElementById('modeBtn').textContent = 'Mode: Include';
+    } else {
+      editMode = 'exclude';
+      // Everything starts included; user clicks to exclude
+      routeHolds.forEach(h => { h.excluded = false; });
+      document.getElementById('modeBtn').textContent = 'Mode: Exclude';
+    }
+    renderHoldsList();
+    drawOverlay();
+  });
+}
+
+async function loadVideoList() {
+  const res = await fetch('/api/videos');
+  videos = await res.json();
+  renderVideoList();
+}
+
+function renderVideoList() {
+  const list = document.getElementById('videoList');
+  list.innerHTML = '';
+  videos.forEach((v, i) => {
+    if (filter === 'done' && !v.has_edit) return;
+    if (filter === 'pending' && v.has_edit) return;
+
+    const div = document.createElement('div');
+    div.className = 'video-item' + (i === currentIdx ? ' active' : '');
+    const badge = v.has_edit
+      ? '<span class="badge done">edited</span>'
+      : '<span class="badge pending">pending</span>';
+    div.innerHTML = `<div class="name">${v.stem} ${badge}</div>
+      <div class="route">${v.route_name || 'no route'} ${v.grade || ''}</div>`;
+    div.addEventListener('click', () => selectVideo(i));
+    list.appendChild(div);
+  });
+}
+
+// ===================== VIDEO SELECTION =====================
+async function selectVideo(idx) {
+  editMode = 'include';
+  document.getElementById('modeBtn').textContent = 'Mode: Include';
+  currentIdx = idx;
+  const v = videos[idx];
+  document.getElementById('videoTitle').textContent =
+    `${v.stem} — ${v.route_name || 'no route'} ${v.grade || ''}`;
+  document.getElementById('saveBtn').disabled = false;
+
+  // Load video
+  const video = document.getElementById('warpedVideo');
+  video.src = `/api/warped/${v.id}.mp4`;
+  video.load();
+
+  // Load route holds
+  const res = await fetch(`/api/holds/${v.id}`);
+  const data = await res.json();
+  routeHolds = data.holds || [];
+
+  // In include mode, start with all excluded unless already edited
+  if (!videos[idx].has_edit) {
+    routeHolds.forEach(h => { h.excluded = true; });
+  }
+
+  renderHoldsList();
+  renderVideoList();
+  drawOverlay();
+}
+
+// ===================== HOLDS LIST =====================
+function renderHoldsList() {
+  const list = document.getElementById('holdsList');
+  list.innerHTML = '';
+  const active = routeHolds.filter(h => !h.excluded).length;
+  document.getElementById('holdCount').textContent = `${active}/${routeHolds.length}`;
+
+  routeHolds.forEach((h, i) => {
+    const div = document.createElement('div');
+    div.className = 'hold-item' + (h.excluded ? ' excluded' : '');
+    const role = canonicalRole(h.role_id);
+    const color = ROLE_COLORS_RGB[role];
+    const roleNames = { 12: 'start', 13: 'mid', 14: 'finish', 15: 'foot' };
+    div.innerHTML = `<span><span class="role-dot" style="background:${color}"></span>${h.name}</span>
+      <span style="color:#888; font-size:11px">${roleNames[role]}</span>`;
+    div.addEventListener('click', () => toggleHold(i));
+    list.appendChild(div);
+  });
+}
+
+function toggleHold(idx) {
+  routeHolds[idx].excluded = !routeHolds[idx].excluded;
+  renderHoldsList();
+  drawOverlay();
+}
+
+// ===================== CANVAS OVERLAY =====================
+function resizeOverlay() {
+  const video = document.getElementById('warpedVideo');
+  const canvas = document.getElementById('overlayCanvas');
+
+  if (!video.videoWidth) return;
+
+  // Match canvas to the video's displayed size and position
+  const rect = video.getBoundingClientRect();
+  const container = document.getElementById('videoContainer').getBoundingClientRect();
+
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  canvas.style.left = (rect.left - container.left) + 'px';
+  canvas.style.top = (rect.top - container.top) + 'px';
+
+  drawOverlay();
+}
+
+function drawOverlay() {
+  const canvas = document.getElementById('overlayCanvas');
+  const video = document.getElementById('warpedVideo');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!video.videoWidth || routeHolds.length === 0) return;
+
+  // Scale factor: canvas pixels per output-video pixel
+  const sx = canvas.width / video.videoWidth;
+  const sy = canvas.height / video.videoHeight;
+
+  // Draw all board holds as tiny dots (schematic)
+  ctx.fillStyle = 'rgba(160, 160, 160, 0.3)';
+  for (const [name, [hx, hy]] of Object.entries(allHolds)) {
+    const [px, py] = boardToCanvas(hx, hy);
+    ctx.beginPath();
+    ctx.arc(px * sx, py * sy, 2 * sx, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Draw route holds
+  routeHolds.forEach(h => {
+    const [px, py] = boardToCanvas(h.x, h.y);
+    const cx = px * sx;
+    const cy = py * sy;
+    const r = 6 * sx;
+    const color = ROLE_COLORS_RGB[canonicalRole(h.role_id)];
+
+    if (h.excluded) {
+      // Dimmed + X
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 * sx;
+      ctx.stroke();
+      // Draw X
+      const xr = r * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(cx - xr, cy - xr);
+      ctx.lineTo(cx + xr, cy + xr);
+      ctx.moveTo(cx + xr, cy - xr);
+      ctx.lineTo(cx - xr, cy + xr);
+      ctx.strokeStyle = '#ff5555';
+      ctx.lineWidth = 2.5 * sx;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else {
+      // Filled circle
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.7;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 * sx;
+      ctx.stroke();
+    }
+
+    // Hold name label
+    ctx.fillStyle = '#fff';
+    ctx.font = `${Math.max(9, 10 * sx)}px sans-serif`;
+    ctx.globalAlpha = 0.7;
+    ctx.fillText(h.name, cx + r + 2, cy + 3);
+    ctx.globalAlpha = 1;
+  });
+}
+
+// ===================== CANVAS CLICK -> TOGGLE HOLD =====================
+function onCanvasClick(e) {
+  const canvas = document.getElementById('overlayCanvas');
+  const video = document.getElementById('warpedVideo');
+  if (!video.videoWidth || routeHolds.length === 0) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+
+  const sx = canvas.width / video.videoWidth;
+  const sy = canvas.height / video.videoHeight;
+
+  // Find closest route hold within click radius
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  const maxDist = 15 * sx;
+
+  routeHolds.forEach((h, i) => {
+    const [px, py] = boardToCanvas(h.x, h.y);
+    const cx = px * sx;
+    const cy = py * sy;
+    const dist = Math.hypot(clickX - cx, clickY - cy);
+    if (dist < bestDist && dist < maxDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  });
+
+  if (bestIdx >= 0) {
+    toggleHold(bestIdx);
+  }
+}
+
+// ===================== PLAYBACK =====================
+function togglePlay() {
+  const video = document.getElementById('warpedVideo');
+  const btn = document.getElementById('playPauseBtn');
+  if (video.paused) {
+    video.play();
+    btn.textContent = '⏸ Pause';
+  } else {
+    video.pause();
+    btn.textContent = '▶ Play';
+  }
+}
+
+function updateScrubber() {
+  const video = document.getElementById('warpedVideo');
+  const scrubber = document.getElementById('scrubber');
+  const display = document.getElementById('timeDisplay');
+  if (video.duration) {
+    scrubber.value = (video.currentTime / video.duration) * 1000;
+    const fmt = s => {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}:${sec.toString().padStart(2, '0')}`;
+    };
+    display.textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+  }
+}
+
+function stepFrame(dir) {
+  const video = document.getElementById('warpedVideo');
+  // Approximate frame duration from WARP_FPS
+  const frameDur = 1 / 10;  // matches config.WARP_FPS default
+  video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + dir * frameDur));
+}
+
+// ===================== SAVE =====================
+async function saveEdits() {
+  if (currentIdx < 0) return;
+  const v = videos[currentIdx];
+  const excluded = routeHolds.filter(h => h.excluded).map(h => h.name);
+
+  const payload = {
+    excluded_holds: excluded,
+    climb_uuid: v.climb_uuid || '',
+    route_name: v.route_name || '',
+  };
+
+  const res = await fetch(`/api/edit/${v.id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (res.ok) {
+    videos[currentIdx].has_edit = true;
+    // Reload holds so in-memory state matches saved state
+    const holdRes = await fetch(`/api/holds/${v.id}`);
+    const holdData = await holdRes.json();
+    routeHolds = holdData.holds || [];
+    editMode = 'include';
+    document.getElementById('modeBtn').textContent = 'Mode: Include';
+    renderHoldsList();
+    renderVideoList();
+    drawOverlay();
+    showToast(`Saved: ${excluded.length} holds excluded`);
+  }
+}
+
+// ===================== NAVIGATION =====================
+function navigate(dir) {
+  if (videos.length === 0) return;
+  const next = Math.max(0, Math.min(videos.length - 1, currentIdx + dir));
+  selectVideo(next);
+}
+
+function navigateNextUnedited() {
+  for (let i = currentIdx + 1; i < videos.length; i++) {
+    if (!videos[i].has_edit) { selectVideo(i); return; }
+  }
+  for (let i = 0; i < currentIdx; i++) {
+    if (!videos[i].has_edit) { selectVideo(i); return; }
+  }
+  showToast('All videos edited!');
+}
+
+// ===================== KEYBOARD =====================
+function onKey(e) {
+  if (e.target.tagName === 'INPUT') return;
+  switch (e.key) {
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'ArrowLeft': stepFrame(-1); break;
+    case 'ArrowRight': stepFrame(1); break;
+    case 'ArrowUp': e.preventDefault(); navigate(-1); break;
+    case 'ArrowDown': e.preventDefault(); navigate(1); break;
+    case 's': if (e.ctrlKey || e.metaKey) { e.preventDefault(); saveEdits(); } break;
+    case 'n': navigateNextUnedited(); break;
+  }
+}
+
+// ===================== TOAST =====================
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// ===================== START =====================
+init();
+</script>
+</body>
+</html>

@@ -1,19 +1,6 @@
 # Data
-data/raw/*
-data/poses/*
+data/*
 !data/raw/climb_log.csv
-!data/poses/floats_your_boat.json
-data/raw_tb2/
-data/poses_tb2/
-data/calibrations/
-data/kilter.db
-data/tension.db
-data/dataset.npz
-data/checkpoints/
-data/viz/
-data/calibration_frames/
-data/detected_features/
-data/holds.json
 
 # Python
 __pycache__/

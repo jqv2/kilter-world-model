@@ -26,6 +26,7 @@ from pipeline.calibration import (
     transform_pose_sequence,
 )
 from pipeline.routes import (
+    apply_route_edits,
     decode_frames_string,
     holds_to_array,
     lookup_route_by_uuid,
@@ -170,7 +171,7 @@ def process_video(
     normalize_holds: bool = True,
 ) -> dict | None:
     """
-    Run the full cleaning + calibration + route lookup pipeline for a single video.
+    Run the full cleaning + calibration + route lookup + hold filtering pipeline for a single video.
 
     Args:
         pose_json_path: Path to the pose extraction JSON.
@@ -222,6 +223,8 @@ def process_video(
     holds = resolve_route(log_entry)
     if holds is None:
         return None
+
+    holds = apply_route_edits(holds, video_stem)
 
     hold_positions, hold_roles = holds_to_array(holds, normalize=normalize_holds)
 

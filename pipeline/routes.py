@@ -5,6 +5,7 @@ Used by the dataset pipeline to attach route context to each training sequence,
 and by the visualization tools to look up climbs by name or UUID.
 """
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -227,3 +228,39 @@ def normalize_board_coords(coords: np.ndarray) -> np.ndarray:
     out[..., 0] = (out[..., 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
     out[..., 1] = (out[..., 1] - BOARD_Y_MIN) / (BOARD_Y_MAX - BOARD_Y_MIN)
     return out
+
+
+def apply_route_edits(
+    holds: list[dict],
+    video_stem: str,
+    edits_dir: Path | None = None,
+) -> list[dict]:
+    """
+    Filter out manually excluded holds for a specific video.
+
+    Loads data/route_edits/{video_stem}_route_edit.json if it exists
+    and removes holds whose 'name' appears in 'excluded_holds'.
+
+    Args:
+        holds: List of hold dicts from decode_frames_string.
+        video_stem: Video filename without extension.
+        edits_dir: Directory containing edit JSONs.
+            Defaults to config.ROUTE_EDITS_DIR.
+
+    Returns:
+        Filtered list of hold dicts (unmodified if no edit file exists).
+    """
+    edits_dir = edits_dir or config.ROUTE_EDITS_DIR
+    edit_path = edits_dir / f"{video_stem}_route_edit.json"
+
+    if not edit_path.exists():
+        return holds
+
+    with open(edit_path) as f:
+        edits = json.load(f)
+
+    excluded = set(edits.get("excluded_holds", []))
+    if not excluded:
+        return holds
+
+    return [h for h in holds if h["name"] not in excluded]
