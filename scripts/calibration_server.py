@@ -56,7 +56,7 @@ def get_video_list():
 
 @app.route("/")
 def index():
-    return send_file(Path(__file__).parent / "calibration_ui.html")
+    return send_file(Path(__file__).resolve().parent.parent / "calibration_ui.html")
 
 
 @app.route("/api/videos")
