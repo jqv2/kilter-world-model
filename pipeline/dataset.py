@@ -169,6 +169,7 @@ def process_video(
     video_stem: str,
     climb_log: dict[str, dict],
     normalize_holds: bool = True,
+    apply_edits: bool = True,
 ) -> dict | None:
     """
     Run the full cleaning + calibration + route lookup + hold filtering pipeline for a single video.
@@ -178,6 +179,8 @@ def process_video(
         video_stem: Video filename without extension.
         climb_log: Dict from load_climb_log().
         normalize_holds: If True, normalize hold positions to [0, 1].
+        apply_edits: If True, apply route edit exclusions from
+            data/route_edits/. If False, use raw DB holds.
 
     Returns:
         Dict with:
@@ -224,7 +227,8 @@ def process_video(
     if holds is None:
         return None
 
-    holds = apply_route_edits(holds, video_stem)
+    if apply_edits:
+        holds = apply_route_edits(holds, video_stem)
 
     hold_positions, hold_roles = holds_to_array(holds, normalize=normalize_holds)
 
@@ -297,6 +301,7 @@ def build_dataset(
     train_fraction: float = 0.8,
     seed: int = 42,
     normalize_holds: bool = True,
+    apply_edits: bool = True,
 ) -> dict:
     """
     Build the full training dataset from all paired videos.
@@ -307,6 +312,8 @@ def build_dataset(
         train_fraction: Fraction of routes in training set.
         seed: Random seed for train/test split.
         normalize_holds: If True, normalize hold positions to [0, 1].
+        apply_edits: If True, apply route edit exclusions. If False, use
+            raw holds from the Kilter DB.
 
     Returns:
         Dict with:
@@ -333,7 +340,7 @@ def build_dataset(
     skipped = []
     no_route = []
     for pose_path, stem in paired:
-        result = process_video(pose_path, stem, climb_log, normalize_holds)
+        result = process_video(pose_path, stem, climb_log, normalize_holds, apply_edits)
         if result is not None:
             processed[stem] = result
         else:
@@ -403,5 +410,6 @@ def build_dataset(
             "train_fraction": train_fraction,
             "seed": seed,
             "holds_normalized": normalize_holds,
+            "route_edits_applied": apply_edits,
         },
     }

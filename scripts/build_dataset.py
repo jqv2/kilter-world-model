@@ -32,12 +32,17 @@ def main():
     )
     parser.add_argument("--train-fraction", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--no-route-edits", action="store_true",
+        help="Ignore route edit files (use raw DB holds without exclusions)",
+    )
     args = parser.parse_args()
 
     print("Building dataset...")
     data = build_dataset(
         train_fraction=args.train_fraction,
         seed=args.seed,
+        apply_edits=not args.no_route_edits,
     )
 
     meta = data["metadata"]
