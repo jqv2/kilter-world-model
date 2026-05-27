@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 import config
-from models.world_model import enforce_bone_lengths, extract_move_targets
+from models.world_model import enforce_bone_lengths, extract_move_targets, check_hold_arrival
 
 
 # ─── Board rendering constants ───────────────────────────────────────────────
@@ -531,8 +531,9 @@ def autoregressive_rollout_structured(
     """
     Run autoregressive rollout for the structured model variant.
 
-    Uses GT-derived target hold schedule so targets advance at the
-    same pace as the training video, regardless of model predictions.
+    Advances the target hold based on the model's own predicted poses:
+    when any limb endpoint stays within the arrival threshold for enough
+    consecutive frames, the target advances to the next hold in sequence.
 
     Args:
         model: StructuredPoseTransformer.
@@ -543,21 +544,15 @@ def autoregressive_rollout_structured(
         hold_sequence: Ordered list of hold dicts in board coordinates.
         device: Torch device.
         max_bone_lengths: (n_bones,) max valid bone lengths for clamping.
-        gt_poses: (T, 17, 2) ground truth poses for deriving the target
-            hold schedule via extract_move_targets.
+        gt_poses: Unused. Kept for call-site compatibility.
 
     Returns:
         Tuple of (poses, targets) where poses is a list of n_frames
-        (NUM_CLIMBING_KEYPOINTS, 2) arrays and targets is (n_frames, 2) board-space target
-        hold positions per frame.
+        (NUM_CLIMBING_KEYPOINTS, 2) arrays and targets is (n_frames, 2)
+        board-space target hold positions per frame.
     """
     import torch
-    from pipeline.routes import BOARD_X_MIN, BOARD_X_MAX, BOARD_Y_MIN, BOARD_Y_MAX
-    gt_filtered = gt_poses[:, config.CLIMBING_KEYPOINT_INDICES, :]
-    targets_board = extract_move_targets(gt_filtered, hold_sequence)
-    targets_norm = targets_board.copy()
-    targets_norm[:, 0] = (targets_norm[:, 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
-    targets_norm[:, 1] = (targets_norm[:, 1] - BOARD_Y_MIN) / (BOARD_Y_MAX - BOARD_Y_MIN)
+    from pipeline.routes import normalize_board_coords
 
     if device is None:
         device = next(model.parameters()).device
@@ -572,7 +567,6 @@ def autoregressive_rollout_structured(
     padded_pos[:n_holds] = hold_positions
     padded_roles[:n_holds] = hold_roles
     mask[:n_holds] = False
-    all_targets = []
 
     h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
     h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
@@ -583,12 +577,14 @@ def autoregressive_rollout_structured(
     n_seed = min(context_len * stride, len(seed_poses))
     history = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES].reshape(-1).astype("float32") for t in range(n_seed)]
     all_poses = [seed_poses[t][config.CLIMBING_KEYPOINT_INDICES] for t in range(n_seed)]
-    
-    # Initial target for seed frames
+
+    # Target hold tracking (prediction-based arrival detection)
+    seq_idx = 0
+    consecutive_near = 0
+    arrival_needed = max(1, config.HOLD_ARRIVAL_FRAMES // stride)
+
     initial_target = np.array([hold_sequence[0]["x"], hold_sequence[0]["y"]], dtype=np.float32)
     all_targets = [initial_target for _ in range(n_seed)]
-
-    step_count = 0
 
     with torch.no_grad():
         while len(all_poses) < n_frames:
@@ -598,11 +594,11 @@ def autoregressive_rollout_structured(
                 np.array([history[i] for i in indices])
             ).unsqueeze(0).to(device)
 
-            # Use GT target schedule: frame index into original video
-            gt_frame_idx = min(n_seed + step_count * stride, len(targets_norm) - 1)
-            tgt_norm_frame = targets_norm[gt_frame_idx]
-            tgt_board_frame = targets_board[gt_frame_idx]
-            tgt_t = torch.from_numpy(tgt_norm_frame).unsqueeze(0).to(device)
+            # Current target from hold sequence
+            target_hold = hold_sequence[min(seq_idx, len(hold_sequence) - 1)]
+            tgt_board = np.array([target_hold["x"], target_hold["y"]], dtype=np.float32)
+            tgt_norm = normalize_board_coords(tgt_board.reshape(1, 2)).reshape(2)
+            tgt_t = torch.from_numpy(tgt_norm).unsqueeze(0).to(device)
 
             pred_flat = model.predict_absolute(
                 context, h_pos_t, h_roles_t, tgt_t, mask_t
@@ -611,16 +607,23 @@ def autoregressive_rollout_structured(
 
             if max_bone_lengths is not None:
                 pred_pose = enforce_bone_lengths(pred_pose, max_bone_lengths)
-                pred_flat = pred_pose.reshape(-1)
-            
+
             pred_flat = pred_pose.reshape(-1)
             history.append(pred_flat)
 
             prev_pose = all_poses[-1]
             for s in range(1, stride + 1):
                 all_poses.append(prev_pose * (1 - s / stride) + pred_pose * (s / stride))
-                all_targets.append(tgt_board_frame.copy())
-            
-            step_count += 1
+                all_targets.append(tgt_board.copy())
+
+            # Advance hold sequence based on predicted pose
+            if seq_idx < len(hold_sequence):
+                if check_hold_arrival(pred_pose, tgt_board):
+                    consecutive_near += 1
+                    if consecutive_near >= arrival_needed:
+                        seq_idx += 1
+                        consecutive_near = 0
+                else:
+                    consecutive_near = 0
 
     return all_poses[:n_frames], np.array(all_targets[:n_frames])

@@ -26,7 +26,7 @@ import config
 from models.world_model import (
     PoseTransformer, StructuredPoseTransformer,
     enforce_bone_lengths, compute_reference_bone_lengths,
-    derive_hold_sequence, _limb_arrival_threshold,
+    derive_hold_sequence,
 )
 from evaluation.visualize import (
     lookup_route,

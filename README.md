@@ -12,6 +12,13 @@ I aim to train a world model that learns how a climber’s body moves during bou
 3. A quantitative comparison against a greedy climber + inverse kinematics baseline on held-out problems.
 4. Skeleton overlay visualizations of predicted climbs.
 
+# Important changes since second checkpoint
+- Ignoring head keypoints
+- Option to ignore unused holds in climbs
+- Removed climbs that may be causing issues:
+    - Traverses
+    - Any climb with beta that includes moves that aren't the expected standard static moves (cutting feet + bumping feet, more dynamic moves, etc.)
+
 # Second checkpoint (5/22, sorry this is a couple hours late)
 ## Progress since first checkpoint
 **Completed:**

@@ -703,6 +703,28 @@ def _limb_arrival_threshold(limb_id: int) -> float:
     return config.FOOT_ARRIVAL_THRESHOLD
 
 
+def check_hold_arrival(
+    pose: np.ndarray,
+    hold_xy: np.ndarray,
+) -> bool:
+    """
+    Check if any limb endpoint is within its arrival threshold of a hold.
+
+    Args:
+        pose: (NUM_CLIMBING_KEYPOINTS, 2) predicted pose in board space.
+        hold_xy: (2,) board-space hold position.
+
+    Returns:
+        True if any limb is within threshold.
+    """
+    for limb_id in range(config.NUM_LIMBS):
+        kp_idx = config.LIMB_KEYPOINTS[limb_id]
+        threshold = _limb_arrival_threshold(limb_id)
+        if np.linalg.norm(pose[kp_idx] - hold_xy) < threshold:
+            return True
+    return False
+
+
 def derive_hold_sequence(
     sequence_poses: np.ndarray,
     route_holds: list[dict],
@@ -738,13 +760,7 @@ def derive_hold_sequence(
     for t in range(T):
         for hold_idx, hold in enumerate(route_holds):
             hold_xy = np.array([hold["x"], hold["y"]])
-            any_near = False
-            for limb_id in range(config.NUM_LIMBS):
-                kp_idx = config.LIMB_KEYPOINTS[limb_id]
-                threshold = _limb_arrival_threshold(limb_id)
-                if np.linalg.norm(sequence_poses[t, kp_idx] - hold_xy) < threshold:
-                    any_near = True
-                    break
+            any_near = check_hold_arrival(sequence_poses[t], hold_xy)
 
             if any_near:
                 if hold_idx in locked:
@@ -792,28 +808,20 @@ def extract_move_targets(
     n_holds = len(hold_sequence)
     consecutive_near = 0
 
-    def _any_limb_near(pose, hold):
-        hold_xy = np.array([hold["x"], hold["y"]])
-        for limb_id in range(config.NUM_LIMBS):
-            kp_idx = config.LIMB_KEYPOINTS[limb_id]
-            threshold = _limb_arrival_threshold(limb_id)
-            if np.linalg.norm(pose[kp_idx] - hold_xy) < threshold:
-                return True
-        return False
-
     for t in range(T):
         target = hold_sequence[min(seq_idx, n_holds - 1)]
         targets[t] = [target["x"], target["y"]]
 
         if seq_idx < n_holds:
-            if _any_limb_near(sequence_poses[t], target):
+            if check_hold_arrival(sequence_poses[t], np.array([target["x"], target["y"]])):
                 consecutive_near += 1
                 if consecutive_near >= arrival_frames:
                     seq_idx += 1
                     consecutive_near = 0
                     # Skip past any subsequent holds we're already at
-                    while seq_idx < n_holds and _any_limb_near(
-                        sequence_poses[t], hold_sequence[seq_idx]
+                    while seq_idx < n_holds and check_hold_arrival(
+                        sequence_poses[t],
+                        np.array([hold_sequence[seq_idx]["x"], hold_sequence[seq_idx]["y"]]),
                     ):
                         seq_idx += 1
                     # Update target for this frame

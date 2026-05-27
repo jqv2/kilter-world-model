@@ -25,10 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 from models.world_model import (
     PoseTransformer, PoseDataset, weighted_mse_loss, bone_length_loss,
-    compute_reference_bone_lengths, enforce_bone_lengths, project_bone_lengths,
-    hold_proximity_loss,
+    compute_reference_bone_lengths, enforce_bone_lengths,
+    hold_proximity_loss, check_hold_arrival,
     StructuredPoseTransformer, StructuredPoseDataset,
-    derive_hold_sequence, extract_move_targets, _limb_arrival_threshold,
+    derive_hold_sequence, extract_move_targets,
 )
 from evaluation.metrics import (
     mean_keypoint_error,
@@ -443,14 +443,7 @@ def evaluate_autoregressive_structured(
 
                 # Advance hold sequence
                 if seq_idx < len(hold_seq):
-                    any_near = False
-                    for limb_id in range(config.NUM_LIMBS):
-                        kp_idx = config.LIMB_KEYPOINTS[limb_id]
-                        threshold = _limb_arrival_threshold(limb_id)
-                        if np.linalg.norm(pred_pose[kp_idx] - tgt_board) < threshold:
-                            any_near = True
-                            break
-                    if any_near:
+                    if check_hold_arrival(pred_pose, tgt_board):
                         consecutive_near += 1
                         if consecutive_near >= max(1, config.HOLD_ARRIVAL_FRAMES // stride):
                             seq_idx += 1
@@ -675,6 +668,7 @@ def main():
                     "weight_decay": args.weight_decay,
                     "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
                 },
+                "dataset_metadata": raw_meta,
             }, args.checkpoint_dir / "best.pt")
 
         # Periodic evaluation
@@ -738,6 +732,7 @@ def main():
             "weight_decay": args.weight_decay,
             "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
         },
+        "dataset_metadata": raw_meta,
     }, args.checkpoint_dir / "final.pt")
 
     print(f"\nDone. Best val loss: {best_val_loss:.6f}")

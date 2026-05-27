@@ -33,6 +33,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+from pipeline.routes import apply_route_edits, holds_to_array
 from pipeline.pose_cleaning import clean_pose_sequence, clean_board_space_poses
 from pipeline.calibration import load_calibration, compute_homographies, kick_threshold_px, transform_keypoints
 from evaluation.visualize import (
@@ -172,6 +173,20 @@ def main():
             grade = route["grade"] or "?"
             title_parts = [f"{route['name']} ({grade})"]
             print(f"  Route: {route['name']} - {grade}, {len(route_holds)} holds")
+
+            # Match route edit behavior to what the model was trained on
+            apply_edits = True
+            if args.checkpoint:
+                ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+                ds_meta = ckpt.get("dataset_metadata", {})
+                apply_edits = ds_meta.get("route_edits_applied", True)
+            if apply_edits:
+                route_holds = apply_route_edits(route_holds, args.video)
+                n_excluded = len(route["holds"]) - len(route_holds)
+                if n_excluded:
+                    print(f"  Route edits: {n_excluded} holds excluded")
+            else:
+                print(f"  Route edits: ignored (matches dataset)")
         except ValueError as e:
             print(f"  Warning: {e}")
             
@@ -224,7 +239,6 @@ def main():
         seed = np.array(gt_poses[:config.CONTEXT_WINDOW * stride])
 
         # Get normalized hold arrays for the route
-        from pipeline.routes import holds_to_array
         if route_holds is None:
             print("Error: --climb is required for predict mode (model needs route context)")
             sys.exit(1)
