@@ -10,6 +10,7 @@ Saves checkpoints to data/checkpoints/ and prints train/val metrics each epoch.
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -512,6 +513,8 @@ def main():
           f"{sum(s.shape[0] for s in data['train_sequences'])} frames")
     print(f"  Test:  {len(data['test_sequences'])} videos, "
           f"{sum(s.shape[0] for s in data['test_sequences'])} frames")
+    raw_meta = json.loads(str(np.load(args.dataset, allow_pickle=True)["metadata"]))
+    print(f"  Route edits: {'applied' if raw_meta.get('route_edits_applied', True) else 'ignored'}")
 
     # Build datasets
     if args.structured:
