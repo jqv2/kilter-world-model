@@ -26,7 +26,7 @@ import config
 from models.world_model import (
     PoseTransformer, StructuredPoseTransformer,
     enforce_bone_lengths, compute_reference_bone_lengths,
-    derive_hold_sequence,
+    resolve_hold_sequence_and_targets,
 )
 from evaluation.visualize import (
     lookup_route,
@@ -36,7 +36,7 @@ from evaluation.visualize import (
     autoregressive_rollout_structured,
 )
 from pipeline.routes import holds_to_array
-from scripts.run_visualize import load_gt_poses, load_model
+from scripts.run_visualize import load_gt_poses, load_model, hold_orders_applied_for
 
 
 def compute_rollout_error(
@@ -121,6 +121,7 @@ def main():
     # Load model
     model = load_model(args.checkpoint, device)
     is_structured = isinstance(model, StructuredPoseTransformer)
+    apply_hold_orders = hold_orders_applied_for(args.checkpoint)
 
     # Load dataset to get stems and route holds
     raw = np.load(args.dataset, allow_pickle=True)
@@ -140,6 +141,8 @@ def main():
 
     print(f"Evaluating {len(videos)} videos ({args.split} split)...")
     print(f"Model: {'structured' if is_structured else 'direct'}")
+    if is_structured:
+        print(f"Hold orders: {'applied' if apply_hold_orders else 'ignored'}")
     print(f"Rollout stride: {config.ROLLOUT_STRIDE}\n")
 
     stride = config.ROLLOUT_STRIDE
@@ -167,7 +170,9 @@ def main():
         # Rollout
         if is_structured:
             gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
-            hold_seq = derive_hold_sequence(gt_filtered, route_holds)
+            hold_seq, _ = resolve_hold_sequence_and_targets(
+                gt_filtered, route_holds, stem if apply_hold_orders else None
+            )
             if len(hold_seq) == 0:
                 print("SKIP (no hold sequence)")
                 continue

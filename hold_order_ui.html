@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hold Order & Timing Editor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a1a; color: #f8f8f2; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar { width: 260px; background: #16213e; border-right: 1px solid #333; display: flex; flex-direction: column; }
+  .sidebar-header { padding: 12px; border-bottom: 1px solid #333; }
+  .sidebar-header h2 { font-size: 15px; margin-bottom: 8px; }
+  .filter-row { display: flex; gap: 4px; }
+  .filter-btn { background: none; border: 1px solid #444; color: #888; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .filter-btn.active { border-color: #8be9fd; color: #8be9fd; }
+  .video-list { flex: 1; overflow-y: auto; }
+  .video-item { padding: 8px 12px; border-bottom: 1px solid #1a1a2e; cursor: pointer; font-size: 13px; }
+  .video-item:hover { background: #1a1a3e; }
+  .video-item.active { background: #0f3460; border-left: 3px solid #8be9fd; }
+  .video-item .name { color: #f8f8f2; }
+  .video-item .route { color: #888; font-size: 11px; margin-top: 2px; }
+  .video-item .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 6px; }
+  .video-item .badge.done { background: #1a3a1a; color: #50fa7b; }
+  .video-item .badge.pending { background: #3a3a1a; color: #f1fa8c; }
+
+  /* Main area */
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .toolbar { padding: 8px 16px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .toolbar .title { font-weight: 600; }
+  .toolbar button { background: none; border: 1px solid #444; color: #ccc; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .toolbar button:hover { background: #1a1a3e; }
+  .toolbar .save-btn { border-color: #50fa7b; color: #50fa7b; }
+  .toolbar .save-btn:hover { background: #1a3a1a; }
+  .toolbar .reset-btn { border-color: #f1fa8c; color: #f1fa8c; }
+  .nav-btns { margin-left: auto; display: flex; gap: 4px; }
+
+  /* Video area */
+  .video-area { flex: 1; display: flex; overflow: hidden; }
+  .video-container { flex: 1; position: relative; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .video-container video { max-width: 100%; max-height: 100%; }
+  .video-container canvas { position: absolute; pointer-events: none; }
+  .video-container canvas.interactive { pointer-events: auto; cursor: crosshair; }
+
+  /* Sequence panel */
+  .seq-panel { width: 250px; background: #16213e; border-left: 1px solid #333; display: flex; flex-direction: column; }
+  .seq-header { padding: 8px 12px; border-bottom: 1px solid #333; font-size: 13px; font-weight: 600; }
+  .seq-hint { padding: 6px 12px; font-size: 11px; color: #888; border-bottom: 1px solid #1a1a2e; }
+  .seq-list { flex: 1; overflow-y: auto; }
+  .seq-item { padding: 6px 8px 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #1a1a2e; cursor: pointer; }
+  .seq-item:hover { background: #1a1a3e; }
+  .seq-item.active { background: #0f3460; }
+  .seq-item .num { width: 20px; height: 20px; border-radius: 50%; background: #333; color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .seq-item .role-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .seq-item .nm { flex: 1; }
+  .seq-item .frm { color: #888; font-size: 10px; }
+  .seq-item .ctl { display: flex; gap: 2px; }
+  .seq-item .ctl button { background: none; border: 1px solid #444; color: #aaa; border-radius: 3px; font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
+  .seq-item .ctl button:hover { background: #1a1a3e; color: #fff; }
+  .seq-item .ctl button.del:hover { border-color: #ff5555; color: #ff5555; }
+  .seq-item .hand-badge { 
+    width: 18px; height: 18px; border-radius: 3px; 
+    font-size: 10px; font-weight: 700; 
+    display: flex; align-items: center; justify-content: center; 
+    cursor: pointer; flex-shrink: 0;
+    background: #2a2a4a; color: #bd93f9; border: 1px solid #555;
+  }
+  .seq-item .hand-badge:hover { background: #3a3a5a; }
+
+  /* Timeline */
+  .timeline-wrap { padding: 6px 16px 0; border-top: 1px solid #333; }
+  .timeline-label { font-size: 11px; color: #888; margin-bottom: 4px; }
+  .timeline { position: relative; height: 30px; background: #111; border: 1px solid #333; border-radius: 4px; overflow: hidden; user-select: none; }
+  .seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; border-right: 1px solid rgba(0,0,0,0.5); overflow: hidden; }
+  .boundary { position: absolute; top: 0; bottom: 0; width: 7px; margin-left: -3px; cursor: ew-resize; z-index: 3; }
+  .boundary::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: #f8f8f2; }
+  .boundary:hover::after { width: 3px; left: 2px; }
+  .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff79c6; z-index: 4; pointer-events: none; }
+
+  /* Playback controls */
+  .playback-bar { padding: 8px 16px; border-top: 1px solid #333; display: flex; align-items: center; gap: 12px; }
+  .playback-bar input[type=range] { flex: 1; }
+  .playback-bar button { background: none; border: 1px solid #444; color: #ccc; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .playback-bar .time { font-size: 12px; color: #888; min-width: 110px; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #50fa7b; color: #000; padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 200; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h2>Hold Order & Timing</h2>
+    <div class="filter-row">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="pending">Pending</button>
+      <button class="filter-btn" data-filter="done">Done</button>
+    </div>
+  </div>
+  <div class="video-list" id="videoList"></div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <span class="title" id="videoTitle">Select a video</span>
+    <button class="reset-btn" id="resetBtn" disabled>Reset to auto</button>
+    <button class="save-btn" id="saveBtn" disabled>Save Order</button>
+    <div class="nav-btns">
+      <button id="prevBtn">← Prev</button>
+      <button id="nextUneditedBtn">Next unedited</button>
+      <button id="nextBtn">Next →</button>
+    </div>
+  </div>
+  <div class="video-area">
+    <div class="video-container" id="videoContainer">
+      <video id="warpedVideo" muted></video>
+      <canvas id="overlayCanvas" class="interactive"></canvas>
+    </div>
+    <div class="seq-panel">
+      <div class="seq-header">
+        Visit Order
+        <span id="seqCount" style="float:right; color:#888; font-weight:normal;"></span>
+      </div>
+      <div class="seq-hint">Click a hold on the video to add it at the current frame. Reorder swaps holds between time slots. Press <b>B</b> to snap the nearest boundary to the playhead. Press <b>H</b> to toggle L/R hand on active hold.</div>
+      <div class="seq-list" id="seqList"></div>
+    </div>
+  </div>
+  <div class="timeline-wrap">
+    <div class="timeline-label" id="timelineLabel">Target segments (drag boundaries to retime)</div>
+    <div class="timeline" id="timeline"></div>
+  </div>
+  <div class="playback-bar">
+    <button id="playPauseBtn">▶ Play</button>
+    <input type="range" id="scrubber" min="0" max="1000" value="0">
+    <span class="time" id="timeDisplay">0:00 / 0:00 · f0</span>
+    <button id="stepBackBtn">◀ -1</button>
+    <button id="stepFwdBtn">+1 ▶</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ===================== CONFIG =====================
+// Must match WARP_SCALE and pad used in warp_videos.py
+const WARP_SCALE = 4;
+const WARP_PAD = 4;
+const BOARD_LEFT = 0, BOARD_RIGHT = 144, BOARD_BOTTOM = 0, BOARD_TOP = 156;
+const KICKBOARD_Y = 12;
+
+// Map raw role IDs to canonical roles (matches role_map in routes.py)
+function canonicalRole(roleId) {
+  const map = {
+    12: 12, 13: 13, 14: 14, 15: 15,
+    20: 12, 21: 13, 22: 14, 23: 15,
+    24: 12, 25: 13, 26: 14, 27: 15,
+    28: 12, 29: 13, 30: 14, 31: 15,
+    32: 12, 33: 13, 34: 14, 35: 15,
+    42: 12, 43: 13, 44: 14, 45: 15,
+  };
+  return map[roleId] || 13;
+}
+
+const ROLE_COLORS_RGB = { 12: '#00ff00', 13: '#00ffff', 14: '#ff00ff', 15: '#ffa500' };
+const ROLE_NAMES = { 12: 'start', 13: 'mid', 14: 'finish', 15: 'foot' };
+
+// ===================== STATE =====================
+let videos = [];
+let currentIdx = -1;
+let routeHolds = [];          // [{name, x, y, role_id}]
+let holdByName = {};          // name -> hold
+let allHolds = {};
+let filter = 'all';
+let numFrames = 0;            // pose-frame count T
+let autoSeed = [];            // auto-detected [{name, start_frame}]
+let slots = [];               // editable [{name, start}], sorted by start, slot 0 renders from 0
+let dragBoundary = -1;        // index of slot whose start is being dragged (>=1)
+
+// ===================== BOARD COORD -> CANVAS PIXEL =====================
+function boardToCanvas(bx, by) {
+  const px = (bx - BOARD_LEFT + WARP_PAD) * WARP_SCALE;
+  const py = (BOARD_TOP + WARP_PAD - by) * WARP_SCALE;
+  return [px, py];
+}
+
+// ===================== FRAME <-> VIDEO TIME =====================
+function frameFrac(f) { return numFrames > 1 ? f / (numFrames - 1) : 0; }
+function curFrame() {
+  const v = document.getElementById('warpedVideo');
+  if (!v.duration || numFrames <= 1) return 0;
+  return Math.round((v.currentTime / v.duration) * (numFrames - 1));
+}
+function seekFrame(f) {
+  const v = document.getElementById('warpedVideo');
+  if (v.duration) v.currentTime = frameFrac(f) * v.duration;
+}
+function activeSlotIdx() {
+  const f = curFrame();
+  let idx = slots.length ? 0 : -1;
+  slots.forEach((s, i) => { const start = (i === 0) ? 0 : s.start; if (start <= f) idx = i; });
+  return idx;
+}
+
+// ===================== INIT =====================
+async function init() {
+  const res = await fetch('/api/all_holds');
+  if (res.ok) { const data = await res.json(); allHolds = data.holds || {}; }
+  await loadVideoList();
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      filter = btn.dataset.filter;
+      renderVideoList();
+    });
+  });
+
+  document.getElementById('prevBtn').addEventListener('click', () => navigate(-1));
+  document.getElementById('nextBtn').addEventListener('click', () => navigate(1));
+  document.getElementById('nextUneditedBtn').addEventListener('click', navigateNextUnedited);
+  document.getElementById('saveBtn').addEventListener('click', saveEdits);
+  document.getElementById('resetBtn').addEventListener('click', resetToAuto);
+
+  const video = document.getElementById('warpedVideo');
+  const scrubber = document.getElementById('scrubber');
+  document.getElementById('playPauseBtn').addEventListener('click', togglePlay);
+  let scrubRAF = null;
+  scrubber.addEventListener('input', () => {
+    if (scrubRAF) return;
+    scrubRAF = requestAnimationFrame(() => {
+      video.currentTime = (scrubber.value / 1000) * video.duration;
+      scrubRAF = null;
+    });
+  });
+  scrubber.addEventListener('change', () => scrubber.blur());
+  video.addEventListener('timeupdate', () => { updateScrubber(); updatePlayhead(); refreshActive(); });
+  video.addEventListener('loadedmetadata', () => { updateScrubber(); resizeOverlay(); updatePlayhead(); });
+  document.getElementById('stepBackBtn').addEventListener('click', () => stepFrame(-1));
+  document.getElementById('stepFwdBtn').addEventListener('click', () => stepFrame(1));
+
+  document.getElementById('overlayCanvas').addEventListener('click', onCanvasClick);
+
+  window.addEventListener('resize', () => { resizeOverlay(); renderTimeline(); });
+  new ResizeObserver(() => { resizeOverlay(); renderTimeline(); }).observe(document.getElementById('videoContainer'));
+
+  document.addEventListener('keydown', onKey);
+
+  // Timeline boundary dragging
+  const tl = document.getElementById('timeline');
+  document.addEventListener('mousemove', onBoundaryDrag);
+  document.addEventListener('mouseup', () => { dragBoundary = -1; });
+}
+
+async function loadVideoList() {
+  const res = await fetch('/api/videos');
+  videos = await res.json();
+  renderVideoList();
+}
+
+function renderVideoList() {
+  const list = document.getElementById('videoList');
+  list.innerHTML = '';
+  videos.forEach((v, i) => {
+    if (filter === 'done' && !v.has_edit) return;
+    if (filter === 'pending' && v.has_edit) return;
+    const div = document.createElement('div');
+    div.className = 'video-item' + (i === currentIdx ? ' active' : '');
+    const badge = v.has_edit
+      ? '<span class="badge done">edited</span>'
+      : '<span class="badge pending">pending</span>';
+    div.innerHTML = `<div class="name">${v.stem} ${badge}</div>
+      <div class="route">${v.route_name || 'no route'} ${v.grade || ''}</div>`;
+    div.addEventListener('click', () => selectVideo(i));
+    list.appendChild(div);
+  });
+}
+
+// ===================== VIDEO SELECTION =====================
+async function selectVideo(idx) {
+  currentIdx = idx;
+  const v = videos[idx];
+  document.getElementById('videoTitle').textContent =
+    `${v.stem} — ${v.route_name || 'no route'} ${v.grade || ''}`;
+  document.getElementById('saveBtn').disabled = false;
+  document.getElementById('resetBtn').disabled = false;
+
+  const video = document.getElementById('warpedVideo');
+  video.src = `/api/warped/${v.id}.mp4`;
+  video.load();
+
+  const res = await fetch(`/api/holds/${v.id}`);
+  const data = await res.json();
+  routeHolds = data.holds || [];
+  holdByName = {};
+  routeHolds.forEach(h => { holdByName[h.name] = h; });
+  numFrames = data.num_frames || 0;
+  autoSeed = data.auto || [];
+
+  if (data.override && Array.isArray(data.override.sequence) && data.override.sequence.length) {
+    let scale = (data.override.num_frames && numFrames)
+      ? numFrames / data.override.num_frames : 1;
+    slots = data.override.sequence
+      .filter(s => holdByName[s.name])
+      .map(s => ({ name: s.name, start: Math.round((s.start_frame || 0) * scale), hand: s.hand || 'L' }));
+  } else {
+    slots = autoSeed.filter(s => holdByName[s.name])
+      .map(s => ({ name: s.name, start: s.start_frame, hand: s.hand || 'L' }));
+  }
+  normalizeSlots();
+
+  renderSequenceList();
+  renderVideoList();
+  renderTimeline();
+  drawOverlay();
+}
+
+async function resetToAuto() {
+    if (currentIdx < 0) return;
+    if (!confirm('Reset to auto-detected order? This will delete the saved override.')) return;
+    const v = videos[currentIdx];
+  
+    await fetch(`/api/edit/${v.id}`, { method: 'DELETE' });
+  
+    slots = autoSeed.filter(s => holdByName[s.name])
+      .map(s => ({ name: s.name, start: s.start_frame, hand: s.hand || 'L' }));
+    normalizeSlots();
+  
+    videos[currentIdx].has_edit = false;
+  
+    renderSequenceList();
+    renderTimeline();
+    renderVideoList();
+    drawOverlay();
+    showToast('Reset to auto-detected order');
+  }
+
+// Keep slots sorted by start; clamp into [0, numFrames-1].
+function normalizeSlots() {
+  slots.forEach(s => { s.start = Math.max(0, Math.min(numFrames - 1, s.start)); });
+  slots.sort((a, b) => a.start - b.start);
+}
+
+// ===================== SEQUENCE LIST =====================
+function renderSequenceList() {
+  const list = document.getElementById('seqList');
+  list.innerHTML = '';
+  document.getElementById('seqCount').textContent = `${slots.length} holds`;
+  const active = activeSlotIdx();
+
+  slots.forEach((s, i) => {
+    const hold = holdByName[s.name];
+    const role = hold ? canonicalRole(hold.role_id) : 13;
+    const color = ROLE_COLORS_RGB[role];
+    const div = document.createElement('div');
+    div.className = 'seq-item' + (i === active ? ' active' : '');
+    div.innerHTML = `
+      <span class="num">${i + 1}</span>
+      <span class="role-dot" style="background:${color}"></span>
+      <span class="hand-badge" data-act="hand">${s.hand}</span>
+      <span class="nm">${s.name}</span>
+      <span class="frm">f${i === 0 ? 0 : s.start}</span>
+      <span class="ctl">
+        <button data-act="up">↑</button>
+        <button data-act="down">↓</button>
+        <button data-act="del" class="del">✕</button>
+      </span>`;
+    div.addEventListener('click', (e) => {
+      if (e.target.dataset.act) return;
+      seekFrame(i === 0 ? 0 : s.start);
+    });
+    div.querySelector('[data-act=up]').addEventListener('click', (e) => { e.stopPropagation(); swapNames(i, i - 1); });
+    div.querySelector('[data-act=down]').addEventListener('click', (e) => { e.stopPropagation(); swapNames(i, i + 1); });
+    div.querySelector('[data-act=del]').addEventListener('click', (e) => { e.stopPropagation(); deleteSlot(i); });
+    div.querySelector('[data-act=hand]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        slots[i].hand = slots[i].hand === 'L' ? 'R' : 'L';
+        renderSequenceList();
+        renderTimeline();
+        drawOverlay();
+      });
+    list.appendChild(div);
+  });
+}
+
+// Reorder swaps hold identities between two adjacent time slots; timing stays.
+function swapNames(i, j) {
+    if (i < 0 || j < 0 || i >= slots.length || j >= slots.length) return;
+    [slots[i].name, slots[j].name] = [slots[j].name, slots[i].name];
+    [slots[i].hand, slots[j].hand] = [slots[j].hand, slots[i].hand];
+    renderSequenceList();
+    renderTimeline();
+    drawOverlay();
+  }
+
+function deleteSlot(i) {
+  slots.splice(i, 1);
+  normalizeSlots();
+  renderSequenceList();
+  renderTimeline();
+  drawOverlay();
+}
+
+function refreshActive() {
+  const active = activeSlotIdx();
+  document.querySelectorAll('.seq-item').forEach((el, i) => {
+    el.classList.toggle('active', i === active);
+  });
+  drawOverlay();
+}
+
+// Snap the nearest movable boundary to the current playhead frame.
+function snapNearestBoundary() {
+    if (slots.length < 2) return;
+    const f = curFrame();
+    let bestIdx = -1, bestDist = Infinity;
+    for (let i = 1; i < slots.length; i++) {
+      const dist = Math.abs(slots[i].start - f);
+      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    if (bestIdx < 0) return;
+    const lo = (bestIdx - 1 === 0 ? 0 : slots[bestIdx - 1].start) + 1;
+    const hi = (bestIdx + 1 < slots.length ? slots[bestIdx + 1].start : numFrames) - 1;
+    slots[bestIdx].start = Math.max(lo, Math.min(hi, f));
+    renderTimeline();
+    renderSequenceList();
+    drawOverlay();
+    showToast(`Snapped boundary ${bestIdx} → f${slots[bestIdx].start}`);
+  }
+
+// ===================== CANVAS OVERLAY =====================
+function resizeOverlay() {
+  const video = document.getElementById('warpedVideo');
+  const canvas = document.getElementById('overlayCanvas');
+  if (!video.videoWidth) return;
+  const rect = video.getBoundingClientRect();
+  const container = document.getElementById('videoContainer').getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  canvas.style.left = (rect.left - container.left) + 'px';
+  canvas.style.top = (rect.top - container.top) + 'px';
+  drawOverlay();
+}
+
+function drawOverlay() {
+  const canvas = document.getElementById('overlayCanvas');
+  const video = document.getElementById('warpedVideo');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!video.videoWidth || routeHolds.length === 0) return;
+
+  const sx = canvas.width / video.videoWidth;
+  const sy = canvas.height / video.videoHeight;
+
+  // All board holds as tiny schematic dots
+  ctx.fillStyle = 'rgba(160, 160, 160, 0.3)';
+  for (const [name, [hx, hy]] of Object.entries(allHolds)) {
+    const [px, py] = boardToCanvas(hx, hy);
+    ctx.beginPath();
+    ctx.arc(px * sx, py * sy, 2 * sx, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Map hold name -> list of slot numbers
+  const numsByName = {};
+  slots.forEach((s, i) => { (numsByName[s.name] = numsByName[s.name] || []).push(i + 1); });
+  const activeName = (activeSlotIdx() >= 0 && slots[activeSlotIdx()]) ? slots[activeSlotIdx()].name : null;
+
+  routeHolds.forEach(h => {
+    const [px, py] = boardToCanvas(h.x, h.y);
+    const cx = px * sx, cy = py * sy, r = 7 * sx;
+    const color = ROLE_COLORS_RGB[canonicalRole(h.role_id)];
+    const nums = numsByName[h.name];
+
+    if (nums) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = (h.name === activeName) ? '#ff79c6' : color;
+      ctx.lineWidth = (h.name === activeName ? 4 : 2.5) * sx;
+      ctx.stroke();
+      // Slot number(s)
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${Math.max(10, 11 * sx)}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // Build label like "1L" or "2R,4L" for multi-visit
+      const labels = nums.map(n => {
+        const s = slots[n - 1];
+        return n + (s ? s.hand : '');
+      });
+      ctx.fillText(labels.join(','), cx, cy);
+      ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    } else {
+      // Available (not yet in sequence)
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.8, 0, Math.PI * 2);
+      ctx.strokeStyle = color; ctx.globalAlpha = 0.5; ctx.lineWidth = 2 * sx;
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+  });
+}
+
+// Click a hold -> append it as a new slot at the current playhead frame
+function onCanvasClick(e) {
+  const canvas = document.getElementById('overlayCanvas');
+  const video = document.getElementById('warpedVideo');
+  if (!video.videoWidth || routeHolds.length === 0) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const clickX = e.clientX - rect.left, clickY = e.clientY - rect.top;
+  const sx = canvas.width / video.videoWidth, sy = canvas.height / video.videoHeight;
+
+  let bestIdx = -1, bestDist = Infinity;
+  const maxDist = 16 * sx;
+  routeHolds.forEach((h, i) => {
+    const [px, py] = boardToCanvas(h.x, h.y);
+    const dist = Math.hypot(clickX - px * sx, clickY - py * sy);
+    if (dist < bestDist && dist < maxDist) { bestDist = dist; bestIdx = i; }
+  });
+
+  if (bestIdx >= 0) {
+    const lastHand = slots.length ? slots[slots.length - 1].hand : 'R';
+    const newHand = lastHand === 'L' ? 'R' : 'L';
+    slots.push({ name: routeHolds[bestIdx].name, start: curFrame(), hand: newHand });
+    normalizeSlots();
+    renderSequenceList();
+    renderTimeline();
+    drawOverlay();
+  }
+}
+
+// ===================== TIMELINE =====================
+function renderTimeline() {
+  const tl = document.getElementById('timeline');
+  tl.innerHTML = '';
+  if (!slots.length || numFrames <= 1) {
+    const ph = document.createElement('div'); ph.className = 'playhead'; ph.id = 'playhead';
+    tl.appendChild(ph); updatePlayhead(); return;
+  }
+  const w = tl.clientWidth;
+
+  slots.forEach((s, i) => {
+    const start = (i === 0) ? 0 : s.start;
+    const end = (i + 1 < slots.length) ? slots[i + 1].start : numFrames;
+    const hold = holdByName[s.name];
+    const color = hold ? ROLE_COLORS_RGB[canonicalRole(hold.role_id)] : '#888';
+
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.style.left = (frameFrac(start) * w) + 'px';
+    seg.style.width = Math.max(0, frameFrac(end) * w - frameFrac(start) * w) + 'px';
+    seg.style.background = color;
+    seg.style.opacity = '0.55';
+    seg.title = `${i + 1}: ${s.name}  (f${start}–${end})`;
+    seg.textContent = `${i + 1}${s.hand}`;
+    seg.addEventListener('click', () => seekFrame(start));
+    tl.appendChild(seg);
+
+    // Draggable boundary at the start of every slot except the first
+    if (i >= 1) {
+      const b = document.createElement('div');
+      b.className = 'boundary';
+      b.style.left = (frameFrac(s.start) * w) + 'px';
+      b.title = `boundary ${i} (f${s.start})`;
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); dragBoundary = i; });
+      tl.appendChild(b);
+    }
+  });
+
+  const ph = document.createElement('div'); ph.className = 'playhead'; ph.id = 'playhead';
+  tl.appendChild(ph);
+  updatePlayhead();
+}
+
+function onBoundaryDrag(e) {
+  if (dragBoundary < 1) return;
+  const tl = document.getElementById('timeline');
+  const rect = tl.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  let f = Math.round(frac * (numFrames - 1));
+  const lo = (slots[dragBoundary - 1] ? (dragBoundary - 1 === 0 ? 0 : slots[dragBoundary - 1].start) : 0) + 1;
+  const hi = (slots[dragBoundary + 1] ? slots[dragBoundary + 1].start - 1 : numFrames - 1);
+  f = Math.max(lo, Math.min(hi, f));
+  slots[dragBoundary].start = f;
+  renderTimeline();
+  renderSequenceList();
+}
+
+function updatePlayhead() {
+  const ph = document.getElementById('playhead');
+  const tl = document.getElementById('timeline');
+  if (!ph || !tl) return;
+  ph.style.left = (frameFrac(curFrame()) * tl.clientWidth) + 'px';
+}
+
+// ===================== PLAYBACK =====================
+function togglePlay() {
+  const video = document.getElementById('warpedVideo');
+  const btn = document.getElementById('playPauseBtn');
+  if (video.paused) { video.play(); btn.textContent = '⏸ Pause'; }
+  else { video.pause(); btn.textContent = '▶ Play'; }
+}
+
+function updateScrubber() {
+  const video = document.getElementById('warpedVideo');
+  const scrubber = document.getElementById('scrubber');
+  const display = document.getElementById('timeDisplay');
+  if (video.duration) {
+    scrubber.value = (video.currentTime / video.duration) * 1000;
+    const fmt = s => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+    display.textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)} · f${curFrame()}`;
+  }
+}
+
+function stepFrame(dir) {
+  seekFrame(Math.max(0, Math.min(numFrames - 1, curFrame() + dir)));
+}
+
+// ===================== SAVE =====================
+async function saveEdits() {
+  if (currentIdx < 0) return;
+  const v = videos[currentIdx];
+  normalizeSlots();
+  const sequence = slots.map((s, i) => ({
+    name: s.name,
+    start_frame: i === 0 ? 0 : s.start,
+    hand: s.hand,
+  }));
+
+  const payload = {
+    climb_uuid: v.climb_uuid || '',
+    route_name: v.route_name || '',
+    num_frames: numFrames,
+    sequence,
+  };
+
+  const res = await fetch(`/api/edit/${v.id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (res.ok) {
+    videos[currentIdx].has_edit = true;
+    renderVideoList();
+    showToast(`Saved: ${sequence.length} holds`);
+  }
+}
+
+// ===================== NAVIGATION =====================
+function navigate(dir) {
+  if (videos.length === 0) return;
+  selectVideo(Math.max(0, Math.min(videos.length - 1, currentIdx + dir)));
+}
+function navigateNextUnedited() {
+  for (let i = currentIdx + 1; i < videos.length; i++) if (!videos[i].has_edit) { selectVideo(i); return; }
+  for (let i = 0; i < currentIdx; i++) if (!videos[i].has_edit) { selectVideo(i); return; }
+  showToast('All videos edited!');
+}
+
+// ===================== KEYBOARD =====================
+function onKey(e) {
+  if (e.target.tagName === 'INPUT') return;
+  switch (e.key) {
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'ArrowLeft': stepFrame(-1); break;
+    case 'ArrowRight': stepFrame(1); break;
+    case 'ArrowUp': e.preventDefault(); navigate(-1); break;
+    case 'ArrowDown': e.preventDefault(); navigate(1); break;
+    case 's': if (e.ctrlKey || e.metaKey) { e.preventDefault(); saveEdits(); } break;
+    case 'n': navigateNextUnedited(); break;
+    case 'b': snapNearestBoundary(); break;
+    case 'h': {
+        const ai = activeSlotIdx();
+        if (ai >= 0) {
+          slots[ai].hand = slots[ai].hand === 'L' ? 'R' : 'L';
+          renderSequenceList(); renderTimeline(); drawOverlay();
+        }
+        break;
+      }
+  }
+}
+
+// ===================== TOAST =====================
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// ===================== START =====================
+init();
+</script>
+</body>
+</html>

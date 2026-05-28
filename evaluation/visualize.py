@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 import config
-from models.world_model import enforce_bone_lengths, extract_move_targets, check_hold_arrival_rollout
+from models.world_model import enforce_bone_lengths, check_hand_arrival
 
 
 # ─── Board rendering constants ───────────────────────────────────────────────
@@ -624,7 +624,8 @@ def autoregressive_rollout_structured(
             # Advance hold sequence based on predicted pose
             if seq_idx < len(hold_sequence):
                 frames_on_current += 1
-                if check_hold_arrival_rollout(pred_pose, tgt_board):
+                if check_hand_arrival(pred_pose, tgt_board,
+                                      threshold=config.ROLLOUT_ARRIVAL_THRESHOLD_HAND) is not None:
                     consecutive_near += 1
                     if consecutive_near >= arrival_needed:
                         seq_idx += 1

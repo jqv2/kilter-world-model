@@ -41,7 +41,7 @@ from models.world_model import (
     PoseTransformer, StructuredPoseTransformer,
     compute_reference_bone_lengths, enforce_bone_lengths,
 )
-from scripts.run_visualize import load_model
+from scripts.run_visualize import load_model, hold_orders_applied_for
 from scripts.train import (
     evaluate_teacher_forcing,
     evaluate_autoregressive,
@@ -147,12 +147,17 @@ def eval_model_checkpoint(
     label = f"{checkpoint_path.stem} ({'structured' if is_structured else 'direct'})"
 
     if is_structured:
+        eval_stems = (
+            data["test_stems"]
+            if hold_orders_applied_for(checkpoint_path) else None
+        )
         tf = evaluate_teacher_forcing_structured(
             model,
             data["test_sequences"], data["test_scores"],
             data["test_holds"], data["test_roles"],
             data["test_route_holds"],
             device,
+            eval_stems,
         )
         ar = evaluate_autoregressive_structured(
             model,
@@ -161,6 +166,7 @@ def eval_model_checkpoint(
             data["test_route_holds"],
             device,
             max_bone_lengths=ref_bones,
+            stems=eval_stems,
         )
     else:
         tf = evaluate_teacher_forcing(

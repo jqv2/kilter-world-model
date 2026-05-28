@@ -268,3 +268,99 @@ def apply_route_edits(
         return holds
 
     return [h for h in holds if h["name"] not in excluded]
+
+def load_hold_order_edit(
+    video_stem: str,
+    orders_dir: Path | None = None,
+) -> dict | None:
+    """
+    Load a manual hold order/timing override for a video, if one exists.
+
+    Looks for data/hold_orders/{video_stem}_hold_order.json, searching
+    subdirectories as a fallback (matching apply_route_edits).
+
+    Args:
+        video_stem: Video filename without extension.
+        orders_dir: Directory containing override JSONs.
+            Defaults to config.HOLD_ORDERS_DIR.
+
+    Returns:
+        The parsed override dict, or None if no override file exists.
+    """
+    orders_dir = orders_dir or config.HOLD_ORDERS_DIR
+    edit_path = orders_dir / f"{video_stem}_hold_order.json"
+
+    if not edit_path.exists():
+        matches = list(orders_dir.rglob(f"{video_stem}_hold_order.json"))
+        if not matches:
+            return None
+        edit_path = matches[0]
+
+    with open(edit_path) as f:
+        return json.load(f)
+
+
+def apply_hold_order_edit(
+    override: dict,
+    route_holds: list[dict],
+    num_frames: int,
+) -> tuple[list[dict], np.ndarray]:
+    """
+    Expand a hold order/timing override into an ordered hold sequence and
+    per-frame target positions.
+
+    The override stores an ordered list of segments, each naming a route
+    hold, the pose-frame index at which it becomes the active target, and
+    which hand (L/R) reaches it. Segments are contiguous: segment i is
+    the target from its start_frame until the next segment's start_frame;
+    the last runs to the end. The earliest segment is forced to cover
+    from frame 0.
+
+    Hold names that no longer match any route hold (e.g. excluded by a
+    later route edit) are skipped. Start frames are rescaled proportionally
+    when the override's stored frame count differs from num_frames, so an
+    override survives a dataset rebuild that changes the cleaned frame count.
+
+    Args:
+        override: Parsed override from load_hold_order_edit, with keys
+            'sequence' (list of {'name': str, 'start_frame': int,
+            'hand': 'L'|'R'}) and 'num_frames' (int, pose-frame count
+            at edit time).
+        route_holds: Unordered list of hold dicts with 'x', 'y', 'name'.
+        num_frames: Current pose-frame count T for the target array.
+
+    Returns:
+        (hold_seq, targets) where hold_seq is the ordered list of hold
+        dicts (each augmented with a 'hand' key: 'L' or 'R') and targets
+        is a (num_frames, 2) board-space array of the active target per
+        frame. hold_seq is empty if no override segment resolves to a
+        current route hold.
+    """
+    by_name = {h["name"]: h for h in route_holds}
+    edit_frames = override.get("num_frames") or num_frames
+    scale = num_frames / edit_frames if edit_frames else 1.0
+
+    segments = []
+    for seg in override.get("sequence", []):
+        hold = by_name.get(seg.get("name"))
+        if hold is None:
+            continue
+        start = int(round(seg.get("start_frame", 0) * scale))
+        start = max(0, min(num_frames - 1, start))
+        hand = seg.get("hand", "L")
+        segments.append((start, {**hold, "hand": hand}))
+
+    segments.sort(key=lambda s: s[0])
+    hold_seq = [hold for _, hold in segments]
+
+    targets = np.zeros((num_frames, 2), dtype=np.float32)
+    if not segments:
+        return hold_seq, targets
+
+    # Earliest segment always covers from frame 0.
+    segments[0] = (0, segments[0][1])
+    for i, (start, hold) in enumerate(segments):
+        end = segments[i + 1][0] if i + 1 < len(segments) else num_frames
+        targets[start:end] = [hold["x"], hold["y"]]
+
+    return hold_seq, targets

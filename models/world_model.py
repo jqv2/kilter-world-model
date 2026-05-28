@@ -27,7 +27,7 @@ import torch.nn as nn
 import numpy as np
 
 import config
-from pipeline.routes import pad_holds, normalize_board_coords
+from pipeline.routes import pad_holds, normalize_board_coords, load_hold_order_edit, apply_hold_order_edit
 
 
 # Number of distinct placement roles (12-15 in the Kilter DB, plus 0 for padding)
@@ -420,6 +420,9 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
         hold_roles: List of (N_i,) arrays of role IDs.
         route_holds: List of unordered hold dict lists (with 'x', 'y' in
             board coordinates) for deriving hold sequences.
+        stems: Optional list of video stems parallel to sequences, used to
+            apply per-video hold order/timing overrides. None disables
+            overrides (pure automatic detection).
         context_len: Number of frames in the input window.
         max_holds: Maximum holds per route (for padding).
         strides: List of temporal strides for sample construction.
@@ -432,6 +435,7 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
         hold_positions: list,
         hold_roles: list,
         route_holds: list[list[dict]],
+        stems: list[str] | None = None,
         context_len: int = config.CONTEXT_WINDOW,
         max_holds: int = config.MAX_ROUTE_HOLDS,
         strides: list[int] | None = None,
@@ -443,18 +447,22 @@ class StructuredPoseDataset(torch.utils.data.Dataset):
         if strides is None:
             strides = [1]
 
-        for seq, sc, h_pos, h_roles, r_holds in zip(
-            sequences, scores, hold_positions, hold_roles, route_holds
+        if stems is None:
+            stems = [None] * len(sequences)
+        for seq, sc, h_pos, h_roles, r_holds, stem in zip(
+            sequences, scores, hold_positions, hold_roles, route_holds, stems
         ):
             T = seq.shape[0]
             seq_filtered = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
             flat = seq_filtered.reshape(T, -1).astype("float32")
 
-            # Derive hold sequence and per-frame targets (board space)
-            hold_seq = derive_hold_sequence(seq_filtered, r_holds)
+            # Hold sequence + per-frame targets (board space), honoring
+            # any manual data/hold_orders/ override for this video.
+            hold_seq, targets_board = resolve_hold_sequence_and_targets(
+                seq_filtered, r_holds, stem
+            )
             if len(hold_seq) == 0:
                 continue
-            targets_board = extract_move_targets(seq_filtered, hold_seq)
 
             targets_norm = normalize_board_coords(targets_board)
 
@@ -752,6 +760,36 @@ def check_hold_arrival_rollout(
     return False
 
 
+def check_hand_arrival(
+    pose: np.ndarray,
+    hold_xy: np.ndarray,
+    threshold: float = config.HAND_ARRIVAL_THRESHOLD,
+) -> int | None:
+    """
+    Check if either hand is within threshold of a hold.
+
+    Only checks hand limb endpoints (wrists), ignoring feet. When both
+    hands are within threshold, returns the closer one.
+
+    Args:
+        pose: (NUM_CLIMBING_KEYPOINTS, 2) in board space.
+        hold_xy: (2,) board-space hold position.
+        threshold: Distance threshold in board units.
+
+    Returns:
+        Limb ID of the arriving hand (0=left, 1=right), or None.
+    """
+    best_limb = None
+    best_dist = float("inf")
+    for limb_id in config.HAND_LIMBS:
+        kp_idx = config.LIMB_KEYPOINTS[limb_id]
+        dist = float(np.linalg.norm(pose[kp_idx] - hold_xy))
+        if dist < threshold and dist < best_dist:
+            best_dist = dist
+            best_limb = limb_id
+    return best_limb
+
+
 def derive_hold_sequence(
     sequence_poses: np.ndarray,
     route_holds: list[dict],
@@ -760,11 +798,9 @@ def derive_hold_sequence(
     """
     Derive the hold visit order from ground truth poses.
 
-    Watches limb endpoints (wrists, ankles) over time and records
-    the order in which route holds are reached. Holds can appear
-    multiple times (matching, foot bumps, returning to a hold).
-    Uses separate thresholds for hands and feet since ankle keypoints
-    are offset from footholds.
+    Watches hand endpoints (wrists) over time and records the order in
+    which route holds are reached by either hand,
+    annotating which hand (L/R) arrived. Feet are ignored.
 
     A hold is locked out after triggering to prevent re-triggering
     during sustained contact. The lockout clears when all limbs leave
@@ -776,30 +812,37 @@ def derive_hold_sequence(
         arrival_frames: Consecutive frames required to confirm arrival.
 
     Returns:
-        Ordered list of hold dicts in the order they were visited.
-        May contain duplicates if a hold is revisited.
+        Ordered list of hold dicts (with added 'hand' key: 'L' or 'R')
+        in the order they were visited by a hand.
     """
     T = sequence_poses.shape[0]
     ordered = []
     near_counts = [0] * len(route_holds)
+    near_hand = [None] * len(route_holds)
     locked = set()  # holds locked out during sustained contact
 
     for t in range(T):
         for hold_idx, hold in enumerate(route_holds):
             hold_xy = np.array([hold["x"], hold["y"]])
-            any_near = check_hold_arrival(sequence_poses[t], hold_xy)
+            hand_id = check_hand_arrival(sequence_poses[t], hold_xy)
 
-            if any_near:
+            if hand_id is not None:
                 if hold_idx in locked:
-                    continue  # still in contact, don't re-count
-                near_counts[hold_idx] += 1
+                    continue
+                if near_hand[hold_idx] == hand_id:
+                    near_counts[hold_idx] += 1
+                else:
+                    near_hand[hold_idx] = hand_id
+                    near_counts[hold_idx] = 1
                 if near_counts[hold_idx] >= arrival_frames:
-                    ordered.append(hold)
+                    ordered.append({**hold, "hand": "L" if hand_id == 0 else "R"})
                     locked.add(hold_idx)
                     near_counts[hold_idx] = 0
+                    near_hand[hold_idx] = None
             else:
                 near_counts[hold_idx] = 0
-                locked.discard(hold_idx)  # left the hold, can detect again
+                near_hand[hold_idx] = None
+                locked.discard(hold_idx)
 
     return ordered
 
@@ -813,7 +856,7 @@ def extract_move_targets(
     Derive per-frame target hold from an ordered hold sequence.
 
     Walks through hold_sequence in order. The current target is held
-    constant until any limb endpoint stays within its arrival threshold
+    constant until the correct hand stays within its arrival threshold
     for arrival_frames consecutive frames, then advances. If the climber
     is already at the next hold when advancing, skips ahead to avoid
     getting stuck on holds being departed.
@@ -840,16 +883,22 @@ def extract_move_targets(
         targets[t] = [target["x"], target["y"]]
 
         if seq_idx < n_holds:
-            if check_hold_arrival(sequence_poses[t], np.array([target["x"], target["y"]])):
+            expected_hand = 0 if target.get("hand") == "L" else 1
+            arriving = check_hand_arrival(sequence_poses[t], np.array([target["x"], target["y"]]))
+            if arriving == expected_hand:
                 consecutive_near += 1
                 if consecutive_near >= arrival_frames:
                     seq_idx += 1
                     consecutive_near = 0
                     # Skip past any subsequent holds we're already at
-                    while seq_idx < n_holds and check_hold_arrival(
-                        sequence_poses[t],
-                        np.array([hold_sequence[seq_idx]["x"], hold_sequence[seq_idx]["y"]]),
-                    ):
+                    while seq_idx < n_holds:
+                        next_hold = hold_sequence[seq_idx]
+                        next_expected = 0 if next_hold.get("hand") == "L" else 1
+                        if check_hand_arrival(
+                            sequence_poses[t],
+                            np.array([next_hold["x"], next_hold["y"]]),
+                        ) != next_expected:
+                            break
                         seq_idx += 1
                     # Update target for this frame
                     target = hold_sequence[min(seq_idx, n_holds - 1)]
@@ -858,3 +907,47 @@ def extract_move_targets(
                 consecutive_near = 0
 
     return targets
+
+
+def resolve_hold_sequence_and_targets(
+    sequence_poses: np.ndarray,
+    route_holds: list[dict],
+    video_stem: str | None = None,
+    arrival_frames: int = config.HOLD_ARRIVAL_FRAMES,
+) -> tuple[list[dict], np.ndarray]:
+    """
+    Get the hold visit sequence and per-frame targets for a video.
+
+    Applies a manual override from data/hold_orders/ when one exists for
+    video_stem, otherwise falls back to automatic detection via
+    derive_hold_sequence + extract_move_targets. This is the single entry
+    point both training pipelines use so overrides are honored consistently.
+
+    Args:
+        sequence_poses: (T, K, 2) board-space keypoints (climbing-filtered).
+        route_holds: Unordered list of hold dicts with 'x', 'y', 'name'.
+        video_stem: Video filename without extension, used to look up an
+            override. If None, always uses automatic detection.
+        arrival_frames: Consecutive frames required to confirm arrival
+            (automatic detection only).
+
+    Returns:
+        (hold_seq, targets) where hold_seq is the ordered list of hold dicts
+        and targets is a (T, 2) board-space array of the active target per
+        frame. hold_seq is empty if no holds are detected and no usable
+        override exists.
+    """
+    T = sequence_poses.shape[0]
+
+    if video_stem is not None:
+        override = load_hold_order_edit(video_stem)
+        if override is not None:
+            hold_seq, targets = apply_hold_order_edit(override, route_holds, T)
+            if hold_seq:
+                return hold_seq, targets
+
+    hold_seq = derive_hold_sequence(sequence_poses, route_holds, arrival_frames)
+    if not hold_seq:
+        return [], np.zeros((T, 2), dtype=np.float32)
+    targets = extract_move_targets(sequence_poses, hold_seq, arrival_frames)
+    return hold_seq, targets

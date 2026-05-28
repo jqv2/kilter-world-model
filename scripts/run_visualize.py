@@ -47,9 +47,8 @@ from models.world_model import (
     PoseTransformer,
     enforce_bone_lengths,
     compute_reference_bone_lengths,
-    extract_move_targets,
     StructuredPoseTransformer,
-    derive_hold_sequence,
+    resolve_hold_sequence_and_targets,
 )
 from evaluation.baselines import greedy_ik_baseline_predictions
 
@@ -116,6 +115,21 @@ def load_model(checkpoint_path: Path, device: torch.device) -> PoseTransformer |
     return model
 
 
+def hold_orders_applied_for(checkpoint_path: Path | None) -> bool:
+    """
+    Read the hold_orders_applied training setting from a checkpoint.
+
+    Returns True (apply data/hold_orders/ overrides) when no checkpoint is
+    given or the field is absent, matching the default training behavior.
+    Lets evaluation and visualization honor overrides exactly as the model
+    was trained, mirroring route_edits_applied for route edits.
+    """
+    if checkpoint_path is None:
+        return True
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    return ckpt.get("config", {}).get("hold_orders_applied", True)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visualize model predictions on a Kilter Board climb"
@@ -157,6 +171,7 @@ def main():
         parser.error("--checkpoint is required for predict mode")
 
     device = config.get_device(args.device)
+    apply_hold_orders = hold_orders_applied_for(args.checkpoint)
 
     # Load GT poses (needed for both modes)
     print(f"Loading ground truth poses for '{args.video}'...")
@@ -202,9 +217,11 @@ def main():
             print("Error: --climb is required for gt_moves mode (need holds for move detection)")
             sys.exit(1)
         gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
-        hold_seq = derive_hold_sequence(gt_filtered, route_holds)
-        print(f"  Derived hold sequence: {len(hold_seq)} holds visited")
-        targets_board = extract_move_targets(gt_filtered, hold_seq)
+        hold_seq, targets_board = resolve_hold_sequence_and_targets(
+            gt_filtered, route_holds, args.video if apply_hold_orders else None
+        )
+        print(f"  Derived hold sequence: {len(hold_seq)} holds visited"
+              f"{'' if apply_hold_orders else ' (overrides ignored)'}")
         title_parts.append("- move targets")
 
         if args.output:
@@ -249,8 +266,11 @@ def main():
         hold_seq = None
         if is_structured:
             gt_filtered = np.array(gt_poses)[:, config.CLIMBING_KEYPOINT_INDICES, :]
-            hold_seq = derive_hold_sequence(gt_filtered, route_holds)
-            print(f"  Derived hold sequence: {len(hold_seq)} holds visited")
+            hold_seq, _ = resolve_hold_sequence_and_targets(
+                gt_filtered, route_holds, args.video if apply_hold_orders else None
+            )
+            print(f"  Derived hold sequence: {len(hold_seq)} holds visited"
+                  f"{'' if apply_hold_orders else ' (overrides ignored)'}")
 
         ref_bones = compute_reference_bone_lengths([np.array(gt_poses)])
 

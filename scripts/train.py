@@ -26,9 +26,9 @@ import config
 from models.world_model import (
     PoseTransformer, PoseDataset, weighted_mse_loss, bone_length_loss,
     compute_reference_bone_lengths, enforce_bone_lengths,
-    hold_proximity_loss, check_hold_arrival, check_hold_arrival_rollout,
+    hold_proximity_loss, check_hand_arrival,
     StructuredPoseTransformer, StructuredPoseDataset,
-    derive_hold_sequence, extract_move_targets,
+    resolve_hold_sequence_and_targets,
 )
 from evaluation.metrics import (
     mean_keypoint_error,
@@ -304,14 +304,21 @@ def evaluate_teacher_forcing_structured(
     roles: list[np.ndarray],
     route_holds: list[list[dict]],
     device: torch.device,
+    stems: list[str] | None = None,
 ) -> dict:
-    """Evaluate structured model under teacher forcing."""
+    """Evaluate structured model under teacher forcing.
+
+    stems (parallel to sequences) enables per-video hold order/timing
+    overrides; None uses automatic detection.
+    """
     model.eval()
     all_errors = []
 
     with torch.no_grad():
-        for seq, sc, h_pos, h_roles, r_holds in zip(
-            sequences, scores, holds, roles, route_holds
+        if stems is None:
+            stems = [None] * len(sequences)
+        for seq, sc, h_pos, h_roles, r_holds, stem in zip(
+            sequences, scores, holds, roles, route_holds, stems
         ):
             seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
             sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
@@ -329,11 +336,12 @@ def evaluate_teacher_forcing_structured(
             h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
             mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
 
-            # Derive targets from GT
-            hold_seq = derive_hold_sequence(seq_f, r_holds)
+            # Targets from GT (or manual hold-order override for this video)
+            hold_seq, targets_board = resolve_hold_sequence_and_targets(
+                seq_f, r_holds, stem
+            )
             if len(hold_seq) == 0:
                 continue
-            targets_board = extract_move_targets(seq_f, hold_seq)
             targets_norm = normalize_board_coords(targets_board)
 
             stride = config.ROLLOUT_STRIDE
@@ -374,6 +382,7 @@ def evaluate_autoregressive_structured(
     route_holds: list[list[dict]],
     device: torch.device,
     max_bone_lengths: np.ndarray | None = None,
+    stems: list[str] | None = None,
 ) -> dict:
     """
     Evaluate structured model under autoregressive rollout.
@@ -386,8 +395,10 @@ def evaluate_autoregressive_structured(
     all_errors = []
 
     with torch.no_grad():
-        for seq, sc, h_pos, h_roles, r_holds in zip(
-            sequences, scores, holds, roles, route_holds
+        if stems is None:
+            stems = [None] * len(sequences)
+        for seq, sc, h_pos, h_roles, r_holds, stem in zip(
+            sequences, scores, holds, roles, route_holds, stems
         ):
             seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
             sc_f = sc[:, config.CLIMBING_KEYPOINT_INDICES] if sc.ndim == 2 else sc
@@ -404,8 +415,8 @@ def evaluate_autoregressive_structured(
             h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
             mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
 
-            # Derive hold sequence from GT (this is the "plan")
-            hold_seq = derive_hold_sequence(seq_f, r_holds)
+            # Hold sequence "plan" from GT (or manual override for this video)
+            hold_seq, _ = resolve_hold_sequence_and_targets(seq_f, r_holds, stem)
             if len(hold_seq) == 0:
                 continue
 
@@ -446,7 +457,8 @@ def evaluate_autoregressive_structured(
                 # Advance hold sequence
                 if seq_idx < len(hold_seq):
                     frames_on_current += 1
-                    if check_hold_arrival_rollout(pred_pose, tgt_board):
+                    if check_hand_arrival(pred_pose, tgt_board,
+                                      threshold=config.ROLLOUT_ARRIVAL_THRESHOLD_HAND) is not None:
                         consecutive_near += 1
                         if consecutive_near >= arrival_needed:
                             seq_idx += 1
@@ -502,6 +514,9 @@ def main():
                         help="Dropout rate for transformer layers")
     parser.add_argument("--weight-decay", type=float, default=1e-4,
                         help="AdamW weight decay")
+    parser.add_argument("--no-hold-orders", action="store_true",
+                        help="Ignore data/hold_orders/ overrides (structured model only); "
+                             "use automatic hold-sequence detection")
     args = parser.parse_args()
 
     device = config.get_device(args.device)
@@ -510,12 +525,17 @@ def main():
     # Load data
     print(f"Loading dataset from {args.dataset}...")
     data = load_dataset(args.dataset)
+    apply_hold_orders = not args.no_hold_orders
+    train_stems_arg = data["train_stems"] if apply_hold_orders else None
+    test_stems_arg = data["test_stems"] if apply_hold_orders else None
     print(f"  Train: {len(data['train_sequences'])} videos, "
           f"{sum(s.shape[0] for s in data['train_sequences'])} frames")
     print(f"  Test:  {len(data['test_sequences'])} videos, "
           f"{sum(s.shape[0] for s in data['test_sequences'])} frames")
     raw_meta = json.loads(str(np.load(args.dataset, allow_pickle=True)["metadata"]))
     print(f"  Route edits: {'applied' if raw_meta.get('route_edits_applied', True) else 'ignored'}")
+    if args.structured:
+        print(f"  Hold orders: {'applied' if apply_hold_orders else 'ignored'}")
 
     # Build datasets
     if args.structured:
@@ -523,6 +543,7 @@ def main():
             data["train_sequences"], data["train_scores"],
             data["train_holds"], data["train_roles"],
             data["train_route_holds"],
+            stems=train_stems_arg,
             strides=args.strides,
         )
     else:
@@ -542,6 +563,7 @@ def main():
             data["test_sequences"], data["test_scores"],
             data["test_holds"], data["test_roles"],
             data["test_route_holds"],
+            stems=test_stems_arg,
             strides=args.strides,
         )
     else:
@@ -671,6 +693,7 @@ def main():
                     "bone_weight": args.bone_weight,
                     "scheduled_sampling_max": args.scheduled_sampling_max,
                     "structured": args.structured,
+                    "hold_orders_applied": apply_hold_orders,
                     "hold_weight": args.hold_weight,
                     "dropout": args.dropout,
                     "weight_decay": args.weight_decay,
@@ -690,6 +713,7 @@ def main():
                     data["test_holds"], data["test_roles"],
                     data["test_route_holds"],
                     device,
+                    test_stems_arg,
                 )
                 ar = evaluate_autoregressive_structured(
                     model,
@@ -698,6 +722,7 @@ def main():
                     data["test_route_holds"],
                     device,
                     max_bone_lengths=ref_bones,
+                    stems=test_stems_arg,
                 )
             else:
                 tf = evaluate_teacher_forcing(
@@ -735,6 +760,7 @@ def main():
             "bone_weight": args.bone_weight,
             "scheduled_sampling_max": args.scheduled_sampling_max,
             "structured": args.structured,
+            "hold_orders_applied": apply_hold_orders,
             "hold_weight": args.hold_weight,
             "dropout": args.dropout,
             "weight_decay": args.weight_decay,

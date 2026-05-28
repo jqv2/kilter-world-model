@@ -118,6 +118,8 @@ CALIBRATION_FRAMES_DIR = DATA_DIR / "calibration_frames"
 DETECTED_FEATURES_DIR = DATA_DIR / "detected_features"
 WARPED_DIR = DATA_DIR / "warped"
 ROUTE_EDITS_DIR = DATA_DIR / "route_edits"
+HOLD_ORDERS_DIR = DATA_DIR / "hold_orders"
+
 WARP_SCALE = 4        # pixels per board unit for warped editing videos
 WARP_FPS = 10         # output frame rate for warped editing videos
 
