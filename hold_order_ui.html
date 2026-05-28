@@ -165,6 +165,7 @@ function canonicalRole(roleId) {
 
 const ROLE_COLORS_RGB = { 12: '#00ff00', 13: '#00ffff', 14: '#ff00ff', 15: '#ffa500' };
 const ROLE_NAMES = { 12: 'start', 13: 'mid', 14: 'finish', 15: 'foot' };
+const HAND_COLOR = { L: '#ff6b6b', R: '#5b8cff' };  // coral red / bright blue
 
 // ===================== STATE =====================
 let videos = [];
@@ -466,7 +467,10 @@ function drawOverlay() {
   // Map hold name -> list of slot numbers
   const numsByName = {};
   slots.forEach((s, i) => { (numsByName[s.name] = numsByName[s.name] || []).push(i + 1); });
-  const activeName = (activeSlotIdx() >= 0 && slots[activeSlotIdx()]) ? slots[activeSlotIdx()].name : null;
+  const activeIdx = activeSlotIdx();
+  const activeSlot = activeIdx >= 0 ? slots[activeIdx] : null;
+  const activeName = activeSlot ? activeSlot.name : null;
+  const activeColor = activeSlot ? HAND_COLOR[activeSlot.hand] || HAND_COLOR.R : HAND_COLOR.R;
 
   routeHolds.forEach(h => {
     const [px, py] = boardToCanvas(h.x, h.y);
@@ -478,7 +482,7 @@ function drawOverlay() {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = color; ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
-      ctx.strokeStyle = (h.name === activeName) ? '#ff79c6' : color;
+      ctx.strokeStyle = (h.name === activeName) ? activeColor : color;
       ctx.lineWidth = (h.name === activeName ? 4 : 2.5) * sx;
       ctx.stroke();
       // Slot number(s)
