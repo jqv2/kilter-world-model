@@ -254,7 +254,11 @@ def apply_route_edits(
     edit_path = edits_dir / f"{video_stem}_route_edit.json"
 
     if not edit_path.exists():
-        return holds
+        # Search subdirectories
+        matches = list(edits_dir.rglob(f"{video_stem}_route_edit.json"))
+        if not matches:
+            return holds
+        edit_path = matches[0]
 
     with open(edit_path) as f:
         edits = json.load(f)
