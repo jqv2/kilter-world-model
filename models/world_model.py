@@ -725,6 +725,33 @@ def check_hold_arrival(
     return False
 
 
+def check_hold_arrival_rollout(
+    pose: np.ndarray,
+    hold_xy: np.ndarray,
+) -> bool:
+    """
+    Check hold arrival with relaxed thresholds for autoregressive rollout.
+
+    Uses wider thresholds than training since predicted poses accumulate
+    drift and may never reach the tight training thresholds.
+
+    Args:
+        pose: (NUM_CLIMBING_KEYPOINTS, 2) predicted pose in board space.
+        hold_xy: (2,) board-space hold position.
+
+    Returns:
+        True if any limb is within the relaxed threshold.
+    """
+    for limb_id in range(config.NUM_LIMBS):
+        kp_idx = config.LIMB_KEYPOINTS[limb_id]
+        threshold = (config.ROLLOUT_ARRIVAL_THRESHOLD_HAND
+                     if limb_id in config.HAND_LIMBS
+                     else config.ROLLOUT_ARRIVAL_THRESHOLD_FOOT)
+        if np.linalg.norm(pose[kp_idx] - hold_xy) < threshold:
+            return True
+    return False
+
+
 def derive_hold_sequence(
     sequence_poses: np.ndarray,
     route_holds: list[dict],

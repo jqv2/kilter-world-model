@@ -26,7 +26,7 @@ import config
 from models.world_model import (
     PoseTransformer, PoseDataset, weighted_mse_loss, bone_length_loss,
     compute_reference_bone_lengths, enforce_bone_lengths,
-    hold_proximity_loss, check_hold_arrival,
+    hold_proximity_loss, check_hold_arrival, check_hold_arrival_rollout,
     StructuredPoseTransformer, StructuredPoseDataset,
     derive_hold_sequence, extract_move_targets,
 )
@@ -417,6 +417,8 @@ def evaluate_autoregressive_structured(
 
             seq_idx = 0
             consecutive_near = 0
+            frames_on_current = 0
+            arrival_needed = max(1, config.HOLD_ARRIVAL_FRAMES // stride)
 
             for t in range(n_seed, T, stride):
                 indices = list(range(len(history) - config.CONTEXT_WINDOW * stride, len(history), stride))
@@ -443,11 +445,17 @@ def evaluate_autoregressive_structured(
 
                 # Advance hold sequence
                 if seq_idx < len(hold_seq):
-                    if check_hold_arrival(pred_pose, tgt_board):
+                    frames_on_current += 1
+                    if check_hold_arrival_rollout(pred_pose, tgt_board):
                         consecutive_near += 1
-                        if consecutive_near >= max(1, config.HOLD_ARRIVAL_FRAMES // stride):
+                        if consecutive_near >= arrival_needed:
                             seq_idx += 1
                             consecutive_near = 0
+                            frames_on_current = 0
+                    elif frames_on_current >= config.ROLLOUT_HOLD_TIMEOUT:
+                        seq_idx += 1
+                        consecutive_near = 0
+                        frames_on_current = 0
                     else:
                         consecutive_near = 0
 

@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 import config
-from models.world_model import enforce_bone_lengths, extract_move_targets, check_hold_arrival
+from models.world_model import enforce_bone_lengths, extract_move_targets, check_hold_arrival_rollout
 
 
 # ─── Board rendering constants ───────────────────────────────────────────────
@@ -538,7 +538,9 @@ def autoregressive_rollout_structured(
     Args:
         model: StructuredPoseTransformer.
         seed_poses: (context_len, 17, 2) initial ground truth poses.
-        n_frames: Total number of frames to generate (including seed).
+        n_frames: Minimum number of frames to generate. Rollout continues
+            beyond this until the hold sequence is exhausted, up to
+            ROLLOUT_MAX_FRAMES.
         hold_positions: (N, 2) normalized hold positions for the route.
         hold_roles: (N,) role IDs for each hold.
         hold_sequence: Ordered list of hold dicts in board coordinates.
@@ -582,12 +584,15 @@ def autoregressive_rollout_structured(
     seq_idx = 0
     consecutive_near = 0
     arrival_needed = max(1, config.HOLD_ARRIVAL_FRAMES // stride)
+    frames_on_current = 0
 
     initial_target = np.array([hold_sequence[0]["x"], hold_sequence[0]["y"]], dtype=np.float32)
     all_targets = [initial_target for _ in range(n_seed)]
 
     with torch.no_grad():
-        while len(all_poses) < n_frames:
+        while len(all_poses) < n_frames or seq_idx < len(hold_sequence):
+            if len(all_poses) >= n_frames * 3:
+                break  # defensive cap
             indices = list(range(len(history) - context_len * stride, len(history), stride))
             indices = [max(0, i) for i in indices]
             context = torch.from_numpy(
@@ -618,12 +623,18 @@ def autoregressive_rollout_structured(
 
             # Advance hold sequence based on predicted pose
             if seq_idx < len(hold_sequence):
-                if check_hold_arrival(pred_pose, tgt_board):
+                frames_on_current += 1
+                if check_hold_arrival_rollout(pred_pose, tgt_board):
                     consecutive_near += 1
                     if consecutive_near >= arrival_needed:
                         seq_idx += 1
                         consecutive_near = 0
+                        frames_on_current = 0
+                elif frames_on_current >= config.ROLLOUT_HOLD_TIMEOUT:
+                    seq_idx += 1
+                    consecutive_near = 0
+                    frames_on_current = 0
                 else:
                     consecutive_near = 0
 
-    return all_poses[:n_frames], np.array(all_targets[:n_frames])
+    return all_poses, np.array(all_targets)

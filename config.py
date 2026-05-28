@@ -169,6 +169,9 @@ FOOT_LIMBS = {2, 3}
 HAND_ARRIVAL_THRESHOLD = 8.0    # board units
 FOOT_ARRIVAL_THRESHOLD = 8.0    # board units
 HOLD_ARRIVAL_FRAMES = 15        # consecutive frames to confirm arrival
+ROLLOUT_ARRIVAL_THRESHOLD_HAND = 8.0   # relaxed threshold for autoregressive rollout
+ROLLOUT_ARRIVAL_THRESHOLD_FOOT = 8.0   # relaxed threshold for autoregressive rollout
+ROLLOUT_HOLD_TIMEOUT = 120               # advance to next hold after this many rollout steps with no arrival
 
 def get_device(override: str | None = None) -> "torch.device":
     """Auto-detect best available device, or use override if given."""
