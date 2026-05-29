@@ -46,6 +46,13 @@
   .seq-panel { width: 250px; background: #16213e; border-left: 1px solid #333; display: flex; flex-direction: column; }
   .seq-header { padding: 8px 12px; border-bottom: 1px solid #333; font-size: 13px; font-weight: 600; }
   .seq-hint { padding: 6px 12px; font-size: 11px; color: #888; border-bottom: 1px solid #1a1a2e; }
+  .start-section { padding: 8px 12px; border-bottom: 1px solid #333; }
+  .start-section .start-title { font-size: 12px; font-weight: 600; color: #aaa; margin-bottom: 6px; }
+  .start-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; }
+  .start-row .hand-badge { width: 18px; height: 18px; border-radius: 3px; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; background: #2a2a4a; color: #bd93f9; border: 1px solid #555; }
+  .start-row .hand-badge:hover { background: #3a3a5a; }
+  .swap-btn { background: none; border: 1px solid #444; color: #aaa; border-radius: 3px; font-size: 11px; padding: 2px 8px; cursor: pointer; margin-left: auto; }
+  .swap-btn:hover { background: #1a1a3e; color: #fff; }
   .seq-list { flex: 1; overflow-y: auto; }
   .seq-item { padding: 6px 8px 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #1a1a2e; cursor: pointer; }
   .seq-item:hover { background: #1a1a3e; }
@@ -123,6 +130,7 @@
         Visit Order
         <span id="seqCount" style="float:right; color:#888; font-weight:normal;"></span>
       </div>
+      <div class="start-section" id="startSection"></div>
       <div class="seq-hint">Click a hold on the video to add it at the current frame. Reorder swaps holds between time slots. Press <b>B</b> to snap the nearest boundary to the playhead. Press <b>H</b> to toggle L/R hand on active hold.</div>
       <div class="seq-list" id="seqList"></div>
     </div>
@@ -137,6 +145,13 @@
     <span class="time" id="timeDisplay">0:00 / 0:00 · f0</span>
     <button id="stepBackBtn">◀ -1</button>
     <button id="stepFwdBtn">+1 ▶</button>
+    <select id="speedSelect">
+      <option value="1" selected>1×</option>
+      <option value="1.25">1.25×</option>
+      <option value="1.5">1.5×</option>
+      <option value="1.75">1.75×</option>
+      <option value="2">2×</option>
+    </select>
   </div>
 </div>
 
@@ -178,6 +193,8 @@ let numFrames = 0;            // pose-frame count T
 let autoSeed = [];            // auto-detected [{name, start_frame}]
 let slots = [];               // editable [{name, start}], sorted by start, slot 0 renders from 0
 let dragBoundary = -1;        // index of slot whose start is being dragged (>=1)
+let playbackRate = 1.0;
+let startHands = { L: null, R: null };  // which hand on which start hold
 
 // ===================== BOARD COORD -> CANVAS PIXEL =====================
 function boardToCanvas(bx, by) {
@@ -238,9 +255,13 @@ async function init() {
   });
   scrubber.addEventListener('change', () => scrubber.blur());
   video.addEventListener('timeupdate', () => { updateScrubber(); updatePlayhead(); refreshActive(); });
-  video.addEventListener('loadedmetadata', () => { updateScrubber(); resizeOverlay(); updatePlayhead(); });
+  video.addEventListener('loadedmetadata', () => { updateScrubber(); resizeOverlay(); updatePlayhead(); video.playbackRate = playbackRate; });
   document.getElementById('stepBackBtn').addEventListener('click', () => stepFrame(-1));
   document.getElementById('stepFwdBtn').addEventListener('click', () => stepFrame(1));
+  document.getElementById('speedSelect').addEventListener('change', (e) => {
+    playbackRate = parseFloat(e.target.value);
+    document.getElementById('warpedVideo').playbackRate = playbackRate;
+  });
 
   document.getElementById('overlayCanvas').addEventListener('click', onCanvasClick);
 
@@ -312,6 +333,13 @@ async function selectVideo(idx) {
   }
   normalizeSlots();
 
+  if (data.override && data.override.start_hands) {
+    startHands = data.override.start_hands;
+  } else {
+    startHands = autoStartHands();
+  }
+  renderStartHands();
+
   renderSequenceList();
   renderVideoList();
   renderTimeline();
@@ -328,6 +356,9 @@ async function resetToAuto() {
     slots = autoSeed.filter(s => holdByName[s.name])
       .map(s => ({ name: s.name, start: s.start_frame, hand: s.hand || 'L' }));
     normalizeSlots();
+
+    startHands = autoStartHands();
+    renderStartHands();
   
     videos[currentIdx].has_edit = false;
   
@@ -343,6 +374,56 @@ function normalizeSlots() {
   slots.forEach(s => { s.start = Math.max(0, Math.min(numFrames - 1, s.start)); });
   slots.sort((a, b) => a.start - b.start);
 }
+
+function getStartHolds() {
+    return routeHolds.filter(h => canonicalRole(h.role_id) === 12);
+  }
+  
+  function autoStartHands() {
+    const starts = getStartHolds();
+    if (starts.length === 0) return { L: null, R: null };
+    if (starts.length === 1) return { L: starts[0].name, R: starts[0].name };
+    const sorted = [...starts].sort((a, b) => a.x - b.x);
+    return { L: sorted[0].name, R: sorted[sorted.length - 1].name };
+  }
+  
+  function renderStartHands() {
+    const section = document.getElementById('startSection');
+    const starts = getStartHolds();
+    if (starts.length === 0) { section.innerHTML = ''; return; }
+  
+    let html = '<div class="start-title">Start Hands</div>';
+    const names = new Set([startHands.L, startHands.R].filter(Boolean));
+    const isSingle = names.size <= 1;
+  
+    for (const hand of ['L', 'R']) {
+      const holdName = startHands[hand];
+      const hold = holdByName[holdName];
+      const color = hold ? ROLE_COLORS_RGB[canonicalRole(hold.role_id)] : '#888';
+      html += `<div class="start-row">
+        <span class="hand-badge">${hand}</span>
+        <span class="role-dot" style="background:${color}; width:8px; height:8px; border-radius:50%; display:inline-block;"></span>
+        <span>${holdName || '—'}</span>
+      </div>`;
+    }
+  
+    if (!isSingle && starts.length >= 2) {
+      html += '<button class="swap-btn" id="swapStartBtn">Swap L/R</button>';
+    }
+  
+    section.innerHTML = html;
+  
+    const swapBtn = document.getElementById('swapStartBtn');
+    if (swapBtn) {
+      swapBtn.addEventListener('click', () => {
+        const tmp = startHands.L;
+        startHands.L = startHands.R;
+        startHands.R = tmp;
+        renderStartHands();
+        drawOverlay();
+      });
+    }
+  }
 
 // ===================== SEQUENCE LIST =====================
 function renderSequenceList() {
@@ -467,6 +548,9 @@ function drawOverlay() {
   // Map hold name -> list of slot numbers
   const numsByName = {};
   slots.forEach((s, i) => { (numsByName[s.name] = numsByName[s.name] || []).push(i + 1); });
+  const startLabels = {};
+  if (startHands.L) (startLabels[startHands.L] = startLabels[startHands.L] || []).push('LS');
+  if (startHands.R) (startLabels[startHands.R] = startLabels[startHands.R] || []).push('RS');
   const activeIdx = activeSlotIdx();
   const activeSlot = activeIdx >= 0 ? slots[activeIdx] : null;
   const activeName = activeSlot ? activeSlot.name : null;
@@ -477,27 +561,35 @@ function drawOverlay() {
     const cx = px * sx, cy = py * sy, r = 7 * sx;
     const color = ROLE_COLORS_RGB[canonicalRole(h.role_id)];
     const nums = numsByName[h.name];
+    const sLabels = startLabels[h.name];
 
-    if (nums) {
+    if (nums || sLabels) {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = color; ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
-      ctx.strokeStyle = (h.name === activeName) ? activeColor : color;
-      ctx.lineWidth = (h.name === activeName ? 4 : 2.5) * sx;
+
+      let strokeCol = color;
+      let strokeW = 2.5;
+      if (h.name === activeName) {
+        strokeCol = activeColor;
+        strokeW = 4;
+      }
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = strokeW * sx;
       ctx.stroke();
-      // Slot number(s)
+
+      const parts = [];
+      if (sLabels) parts.push(...sLabels);
+      if (nums) parts.push(...nums.map(n => {
+        const s = slots[n - 1];
+        return n + (s ? s.hand : '');
+      }));
       ctx.fillStyle = '#000';
       ctx.font = `bold ${Math.max(10, 11 * sx)}px sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      // Build label like "1L" or "2R,4L" for multi-visit
-      const labels = nums.map(n => {
-        const s = slots[n - 1];
-        return n + (s ? s.hand : '');
-      });
-      ctx.fillText(labels.join(','), cx, cy);
+      ctx.fillText(parts.join(','), cx, cy);
       ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
     } else {
-      // Available (not yet in sequence)
       ctx.beginPath();
       ctx.arc(cx, cy, r * 0.8, 0, Math.PI * 2);
       ctx.strokeStyle = color; ctx.globalAlpha = 0.5; ctx.lineWidth = 2 * sx;
@@ -637,6 +729,7 @@ async function saveEdits() {
     climb_uuid: v.climb_uuid || '',
     route_name: v.route_name || '',
     num_frames: numFrames,
+    start_hands: startHands,
     sequence,
   };
 
