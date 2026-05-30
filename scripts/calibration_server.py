@@ -271,6 +271,46 @@ def board_map():
         left = board_to_px(bx_min, by)
         right = board_to_px(bx_max, by)
         cv2.line(img, left, right, (40, 40, 40), 1)
+    # Coordinate axes with tick marks
+    tick_len = 5  # pixels
+    axis_color = (0, 200, 200)
+    label_color = (0, 200, 200)
+
+    # X-axis ticks and labels along bottom edge
+    for bx in range(bx_min, bx_max + 1, 4):
+        px, py = board_to_px(bx, by_min)
+        cv2.line(img, (px, py), (px, py + tick_len), axis_color, 1)
+        cv2.putText(img, str(bx), (px - 8, py + tick_len + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, label_color, 1)
+
+    # Y-axis ticks and labels along left edge
+    for by in range(by_min, by_max + 1, 4):
+        px, py = board_to_px(bx_min, by)
+        cv2.line(img, (px - tick_len, py), (px, py), axis_color, 1)
+        cv2.putText(img, str(by), (px - tick_len - 28, py + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, label_color, 1)
+
+    # Ensure exact edge values are labelled even if not on a 12-unit boundary
+    for bx in [bx_min, bx_max]:
+        if bx % 12 != 0:
+            px, py = board_to_px(bx, by_min)
+            cv2.line(img, (px, py), (px, py + tick_len), axis_color, 1)
+            cv2.putText(img, str(bx), (px - 8, py + tick_len + 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, label_color, 1)
+    for by in [by_min, by_max]:
+        if by % 12 != 0:
+            px, py = board_to_px(bx_min, by)
+            cv2.line(img, (px - tick_len, py), (px, py), axis_color, 1)
+            cv2.putText(img, str(by), (px - tick_len - 28, py + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, label_color, 1)
+
+    # Corner labels for clarity
+    ox, oy = board_to_px(bx_min, by_min)
+    cv2.putText(img, f"({bx_min},{by_min})", (ox + 4, oy + 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
+    ox, oy = board_to_px(bx_max, by_max)
+    cv2.putText(img, f"({bx_max},{by_max})", (ox - 50, oy - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
 
     # Holds
     for name, (hx, hy) in holds.items():
