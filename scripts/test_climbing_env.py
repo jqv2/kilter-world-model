@@ -17,13 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.dataset import load_dataset
 from models.rl_baseline import (
     prepare_routes_for_rl, ClimbingEnv, extract_keypoints,
+    extract_head_position, _compute_cog_meters,
     _JOINT_NAMES, _LIMB_NAMES, _get_end_effector_positions_bu,
+    rollout_episode,
 )
 import config
-from models.rl_baseline import extract_keypoints, extract_head_position
 import evaluation.visualize as viz
 from evaluation.visualize import (
-    render_board_image, draw_skeleton, draw_target_hold, get_all_holds, render_pose_video_with_targets
+    render_board_image, draw_skeleton, draw_target_hold, get_all_holds,
+    board_to_pixel, RENDER_SCALE, RENDER_PAD,
 )
 import cv2
 
@@ -35,6 +37,71 @@ def load_env(dataset_path: Path | None = None, seed: int = 42) -> ClimbingEnv:
     routes, bone_lengths = prepare_routes_for_rl(dataset)
     print(f"Prepared {len(routes)} routes, bone lengths: { {k: f'{v:.1f}' for k, v in bone_lengths.items()} }")
     return ClimbingEnv(routes, bone_lengths, seed=seed)
+
+
+def collect_stability_viz(env):
+    """Extract CoG and support polygon from current env state."""
+    m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
+    cog_bu = _compute_cog_meters(env._ragdoll) * m2bu
+
+    # Extract CoG for each individual body (Pymunk body.position is the CoG)
+    segment_cogs_bu = np.array(
+        [body.position for body in env._ragdoll.bodies.values()]
+    ) * m2bu
+
+    anchored_pos = []
+    for limb in _LIMB_NAMES:
+        idx = env._anchor_hold_idx.get(limb)
+        if idx is not None and idx >= 0:
+            anchored_pos.append(env._hold_positions_bu[idx])
+        elif idx == -1:
+            ee_idx = _LIMB_NAMES.index(limb)
+            ee = _get_end_effector_positions_bu(env._ragdoll)
+            anchored_pos.append(ee[ee_idx])
+
+    return cog_bu, segment_cogs_bu, np.array(anchored_pos) if anchored_pos else np.empty((0, 2))
+
+
+def draw_stability_overlay(img, cog_bu, segment_cogs_bu, support_bu, scale=RENDER_SCALE, pad=RENDER_PAD):
+    """Draw CoG dot and support polygon on a board image."""
+    # Support polygon
+    if len(support_bu) >= 2:
+        pts_px = np.array(
+            [board_to_pixel(p[0], p[1], scale, pad) for p in support_bu],
+            dtype=np.int32,
+        )
+
+        if len(support_bu) == 2:
+            cv2.line(img, tuple(pts_px[0]), tuple(pts_px[1]), (0, 0, 200), 2)
+        else:
+            # Order CCW for consistent polygon
+            centroid = support_bu.mean(axis=0)
+            angles = np.arctan2(support_bu[:, 1] - centroid[1],
+                                support_bu[:, 0] - centroid[0])
+            order = np.argsort(angles)
+            ordered_px = pts_px[order].reshape(-1, 1, 2)
+
+            # Semi-transparent fill
+            overlay = img.copy()
+            cv2.fillPoly(overlay, [ordered_px], (0, 0, 180))
+            cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+
+            # Outline
+            cv2.polylines(img, [ordered_px], isClosed=True, color=(0, 0, 200), thickness=2)
+
+        # Contact points
+        for pt in pts_px:
+            cv2.circle(img, tuple(pt), 5, (0, 0, 220), -1)
+
+    # Segment CoGs (small white dots)
+    for seg_cog in segment_cogs_bu:
+        px = board_to_pixel(seg_cog[0], seg_cog[1], scale, pad)
+        cv2.circle(img, px, 3, (255, 255, 255), -1)
+
+    # CoG dot
+    cog_px = board_to_pixel(cog_bu[0], cog_bu[1], scale, pad)
+    cv2.circle(img, cog_px, 6, (0, 0, 255), -1)
+    cv2.circle(img, cog_px, 6, (255, 255, 255), 1)
 
 
 def test_reset(env: ClimbingEnv):
@@ -179,70 +246,25 @@ def test_hand_arrival(env: ClimbingEnv):
         print(f"  SKIP — target hold not in route holds (dist={dists[closest]:.1f})")
         
 
-def test_visual_rollout(env: ClimbingEnv, label: str, n_steps: int, action_fn):
-    """Run a rollout, collect keypoints, render video with head + target."""
-    from models.rl_baseline import extract_keypoints, extract_head_position
-    from evaluation.visualize import (
-        render_board_image, draw_skeleton, draw_target_hold, get_all_holds,
+def test_visual_rollout(env, label, n_steps, action_fn):
+    head_r = config.RL_HEAD_RADIUS / config.RL_BOARD_UNIT_TO_METERS
+
+    data = rollout_episode(env, action_fn, route_index=0, max_steps=n_steps)
+
+    viz.render_rl_video(
+        poses=data["poses"][:n_steps + 1],
+        output_path=config.DATA_DIR / "rl_viz" / f"phase2_{label}.mp4",
+        route_holds=data["route_holds"],
+        fps=config.RL_PHYSICS_HZ,
+        title=f"Phase 2: {label}",
+        head_positions=data["head_positions"],
+        head_radius_bu=head_r,
+        target_positions=data["targets"],
+        cog_positions=data["cog_positions"],
+        support_polygons=data["support_polygons"],
+        board_y_min=int(config.RL_GROUND_Y - 5),
+        interpolate=(config.RL_PHYSICS_HZ, config.RL_CONTROL_HZ),
     )
-    import cv2
-
-    obs, _ = env.reset(options={"route_index": 0})
-
-    poses, heads, targets = [], [], []
-
-    def snapshot():
-        poses.append(extract_keypoints(env._ragdoll))
-        heads.append(extract_head_position(env._ragdoll))
-        t = env._current_target()
-        targets.append((t["x"], t["y"]))
-
-    snapshot()
-    for step in range(n_steps):
-        action = action_fn(env, step)
-        obs, reward, terminated, truncated, info = env.step(action)
-        snapshot()
-        if terminated or truncated:
-            print(f"  ended at step {step}: {info['outcome']}")
-            break
-        
-    # Interpolate between env steps for smooth playback
-    substeps = config.RL_PHYSICS_HZ // config.RL_CONTROL_HZ
-    smooth_poses, smooth_heads, smooth_targets = [], [], []
-    for i in range(len(poses) - 1):
-        for s in range(substeps):
-            alpha = s / substeps
-            smooth_poses.append(poses[i] * (1 - alpha) + poses[i + 1] * alpha)
-            smooth_heads.append(heads[i] * (1 - alpha) + heads[i + 1] * alpha)
-            smooth_targets.append(targets[i])
-    smooth_poses.append(poses[-1])
-    smooth_heads.append(heads[-1])
-    smooth_targets.append(targets[-1])
-    poses, heads, targets = smooth_poses, smooth_heads, smooth_targets
-
-    # Extend viewport to show ground-level feet
-    original_bottom = viz.BOARD_EDGES["bottom"]
-    viz.BOARD_EDGES["bottom"] = int(min(original_bottom, config.RL_GROUND_Y - 5))
-
-    # Render
-    board_img = render_board_image(env._routes[0].holds, get_all_holds())
-    h, w = board_img.shape[:2]
-    output_path = config.DATA_DIR / "rl_viz" / f"phase2_{label}.mp4"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), config.RL_PHYSICS_HZ, (w, h),
-    )
-    for i, (kp, head, tgt) in enumerate(zip(poses, heads, targets)):
-        frame = board_img.copy()
-        draw_skeleton(frame, kp, head_pos=head)
-        draw_target_hold(frame, tgt)
-        cv2.putText(frame, f"Phase 2: {label}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(frame, f"Frame {i}", (10, h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        writer.write(frame)
-    writer.release()
-    print(f"  saved {len(poses)} frames to {output_path}")
 
 
 if __name__ == "__main__":

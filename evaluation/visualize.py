@@ -442,6 +442,250 @@ def render_pose_video_with_targets(
 
     writer.release()
     print(f"Saved {len(poses)}-frame target video to {output_path}")
+    
+    
+def draw_rl_frame(
+    img: np.ndarray,
+    keypoints: np.ndarray,
+    scale: int = RENDER_SCALE,
+    pad: int = RENDER_PAD,
+    head_pos: np.ndarray | None = None,
+    head_radius_bu: float | None = None,
+    target_pos: tuple[float, float] | None = None,
+    cog_bu: np.ndarray | None = None,
+    support_bu: np.ndarray | None = None,
+    segment_cogs_bu: np.ndarray | None = None,
+    show_segment_cogs: bool = False,
+) -> None:
+    """Draw skeleton with RL overlays on a board image (in-place).
+
+    Draws stability overlay (behind), skeleton, head circle, and
+    target hold marker.  Overlays are skipped when their data is None.
+
+    Args:
+        img: Board image (BGR).
+        keypoints: (12, 2) climbing keypoints in board units.
+        scale: Pixels per board unit.
+        pad: Padding in board units.
+        head_pos: (2,) head centre in board units.
+        head_radius_bu: Head circle radius in board units.  When None
+            a cosmetic default is used.  To get the physical radius,
+            pass ``RL_HEAD_RADIUS / RL_BOARD_UNIT_TO_METERS``.
+        target_pos: (x, y) target hold in board units.
+        cog_bu: (2,) overall centre of gravity in board units.
+        support_bu: (N, 2) support polygon vertices in board units.
+            Drawn as a line for 2 contacts, shaded polygon for 3+.
+        segment_cogs_bu: (M, 2) per-segment CoGs in board units.
+        show_segment_cogs: Draw per-segment CoG dots when True and
+            *segment_cogs_bu* is provided.
+    """
+    # 1. Support polygon (behind everything)
+    if support_bu is not None and len(support_bu) >= 2:
+        pts_px = np.array(
+            [board_to_pixel(p[0], p[1], scale, pad) for p in support_bu],
+            dtype=np.int32,
+        )
+        if len(support_bu) == 2:
+            cv2.line(img, tuple(pts_px[0]), tuple(pts_px[1]),
+                     (0, 0, 200), 2)
+        else:
+            centroid = support_bu.mean(axis=0)
+            angles = np.arctan2(support_bu[:, 1] - centroid[1],
+                                support_bu[:, 0] - centroid[0])
+            ordered_px = pts_px[np.argsort(angles)].reshape(-1, 1, 2)
+            overlay = img.copy()
+            cv2.fillPoly(overlay, [ordered_px], (0, 0, 180))
+            cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+            cv2.polylines(img, [ordered_px], isClosed=True,
+                          color=(0, 0, 200), thickness=2)
+        for pt in pts_px:
+            cv2.circle(img, tuple(pt), 5, (0, 0, 220), -1)
+
+    # 2. Per-segment CoGs
+    if show_segment_cogs and segment_cogs_bu is not None:
+        for seg_cog in segment_cogs_bu:
+            px = board_to_pixel(seg_cog[0], seg_cog[1], scale, pad)
+            cv2.circle(img, px, 3, (255, 255, 255), -1)
+
+    # 3. Overall CoG
+    if cog_bu is not None:
+        cog_px = board_to_pixel(cog_bu[0], cog_bu[1], scale, pad)
+        cv2.circle(img, cog_px, 6, (0, 0, 255), -1)
+        cv2.circle(img, cog_px, 6, (255, 255, 255), 1)
+
+    # 4. Skeleton (without head — drawn separately with physical radius)
+    draw_skeleton(img, keypoints, scale, pad)
+
+    # 5. Head circle
+    if head_pos is not None:
+        pt = board_to_pixel(head_pos[0], head_pos[1], scale, pad)
+        if head_radius_bu is not None:
+            r_px = max(1, int(head_radius_bu * scale))
+        else:
+            r_px = max(6, int(scale * 0.4))
+        cv2.circle(img, pt, r_px, COLOR_JOINT, 2)
+
+    # 6. Target hold marker
+    if target_pos is not None:
+        draw_target_hold(img, target_pos, scale, pad)
+
+
+def _interpolate_rl_data(poses, heads, targets, cogs, supports,
+                         segment_cogs, substeps):
+    """Linearly interpolate per-step RL data for smooth video playback."""
+    def _lerp_lists(a_list, b_list, substeps):
+        out = []
+        for i in range(len(a_list) - 1):
+            for s in range(substeps):
+                alpha = s / substeps
+                out.append(a_list[i] * (1 - alpha) + b_list[i + 1] * alpha)
+        out.append(a_list[-1])
+        return out
+
+    def _snap_list(lst, substeps):
+        out = []
+        for i in range(len(lst) - 1):
+            out.extend([lst[i]] * substeps)
+        out.append(lst[-1])
+        return out
+
+    sm_poses = _lerp_lists(poses, poses, substeps)
+    sm_heads = _lerp_lists(heads, heads, substeps) if heads else None
+    sm_targets = _snap_list(targets, substeps) if targets else None
+    sm_cogs = _lerp_lists(cogs, cogs, substeps) if cogs else None
+
+    sm_supports = None
+    if supports:
+        sm_supports = []
+        for i in range(len(supports) - 1):
+            a, b = supports[i], supports[i + 1]
+            can_lerp = len(a) == len(b) and len(a) > 0
+            for s in range(substeps):
+                alpha = s / substeps
+                sm_supports.append(
+                    a * (1 - alpha) + b * alpha if can_lerp else a,
+                )
+        sm_supports.append(supports[-1])
+
+    sm_seg = _lerp_lists(segment_cogs, segment_cogs, substeps) \
+        if segment_cogs else None
+
+    return sm_poses, sm_heads, sm_targets, sm_cogs, sm_supports, sm_seg
+
+
+def render_rl_video(
+    poses: list[np.ndarray],
+    output_path: Path,
+    route_holds: list[dict] | None = None,
+    fps: float = 30.0,
+    title: str | None = None,
+    head_positions: list[np.ndarray] | None = None,
+    head_radius_bu: float | None = None,
+    target_positions: list[tuple[float, float]] | None = None,
+    cog_positions: list[np.ndarray] | None = None,
+    support_polygons: list[np.ndarray] | None = None,
+    segment_cog_positions: list[np.ndarray] | None = None,
+    show_segment_cogs: bool = False,
+    board_y_min: int | None = None,
+    scale: int = RENDER_SCALE,
+    pad: int = RENDER_PAD,
+    interpolate: tuple[int, int] | None = None,
+) -> None:
+    """Render an RL episode as a skeleton overlay video.
+
+    Combines the skeleton, head circle, target hold marker, CoG dot,
+    and support polygon into a single video.  All overlay data is
+    optional — omit any list to skip that overlay.
+
+    Args:
+        poses: List of (12, 2) keypoint arrays in board units.
+        output_path: Path for the output .mp4 file.
+        route_holds: Route holds to highlight on the board.
+        fps: Output video frame rate.
+        title: Optional title text shown on each frame.
+        head_positions: Per-frame (2,) head centre in board units.
+        head_radius_bu: Head circle radius in board units.
+        target_positions: Per-frame (x, y) target hold position.
+        cog_positions: Per-frame (2,) overall CoG in board units.
+        support_polygons: Per-frame (N, 2) support polygon vertices.
+        segment_cog_positions: Per-frame (M, 2) segment CoGs.
+        show_segment_cogs: Draw per-segment CoG dots.
+        board_y_min: Extend the viewport to this board-unit y value
+            (e.g. ``RL_GROUND_Y - 5`` to show ground-level feet).
+        scale: Pixels per board unit.
+        pad: Padding in board units.
+        interpolate: ``(physics_hz, control_hz)`` tuple.  When provided,
+            linearly interpolates all per-frame data to produce
+            ``physics_hz / control_hz`` smooth frames per input frame.
+            The *fps* should then be set to *physics_hz* for real-time
+            playback.
+    """
+    original_bottom = BOARD_EDGES["bottom"]
+    if board_y_min is not None:
+        BOARD_EDGES["bottom"] = int(min(original_bottom, board_y_min))
+
+    try:
+        all_holds = get_all_holds()
+        board_img = render_board_image(route_holds, all_holds, scale, pad)
+        h, w = board_img.shape[:2]
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = cv2.VideoWriter(
+            str(output_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (w, h),
+        )
+        
+        if interpolate is not None:
+            phys_hz, ctrl_hz = interpolate
+            substeps = phys_hz // ctrl_hz
+            poses, head_positions, target_positions, cog_positions, \
+                support_polygons, segment_cog_positions = _interpolate_rl_data(
+                    poses, head_positions, target_positions, cog_positions,
+                    support_polygons, segment_cog_positions, substeps,
+                )
+
+        for i, pose in enumerate(poses):
+            frame = board_img.copy()
+
+            draw_rl_frame(
+                frame, pose, scale, pad,
+                head_pos=(head_positions[i]
+                          if head_positions and i < len(head_positions)
+                          else None),
+                head_radius_bu=head_radius_bu,
+                target_pos=(target_positions[i]
+                            if target_positions and i < len(target_positions)
+                            else None),
+                cog_bu=(cog_positions[i]
+                        if cog_positions and i < len(cog_positions)
+                        else None),
+                support_bu=(support_polygons[i]
+                            if support_polygons and i < len(support_polygons)
+                            else None),
+                segment_cogs_bu=(segment_cog_positions[i]
+                                 if segment_cog_positions
+                                 and i < len(segment_cog_positions)
+                                 else None),
+                show_segment_cogs=show_segment_cogs,
+            )
+
+            if title:
+                cv2.putText(frame, title, (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (255, 255, 255), 1)
+            cv2.putText(frame, f"Frame {i}", (10, h - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (200, 200, 200), 1)
+
+            writer.write(frame)
+
+        writer.release()
+        print(f"Saved {len(poses)}-frame RL video to {output_path}")
+
+    finally:
+        BOARD_EDGES["bottom"] = original_bottom
 
 
 # ─── Inference helpers ────────────────────────────────────────────────────────

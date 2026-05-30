@@ -19,6 +19,9 @@ extract_keypoints       Read (12, 2) board-unit keypoints from body state.
 create_hold_joint       Attach a limb to a hold.
 destroy_hold_joint      Release a limb from a hold.
 set_motor_rate          Set a joint motor's target angular velocity.
+prepare_routes_for_rl   Package dataset routes for the Gym environment.
+ClimbingEnv             Gymnasium environment for RL climbing.
+rollout_episode         Run one episode and collect rendering/metric data.
 """
 
 from __future__ import annotations
@@ -35,9 +38,9 @@ from pipeline.routes import load_hold_order_edit, BOARD_X_MIN, BOARD_X_MAX, BOAR
 
 import config
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # De Leva (1996) mass fractions. Combined segments for the ragdoll
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # torso  = head (0.0694) + trunk (0.4346)  = 0.5040
 # thigh  = thigh                            = 0.1416  (×2)
 # shin   = shank (0.0433) + foot (0.0137)  = 0.0570  (×2)
@@ -113,9 +116,9 @@ _SEGMENT_COM_FRACS: dict[str, float] = {
     ),
 }
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Joint limits and motor torques
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def _get_joint_limits(joint_name: str) -> tuple[float, float] | None:
     """Angle limits for a joint, or None for free rotation.
@@ -131,8 +134,8 @@ def _get_joint_limits(joint_name: str) -> tuple[float, float] | None:
         return (-5 * math.pi / 6, 5 * math.pi / 6)
     if "elbow" in joint_name:
         if "left" in joint_name:
-            return (-math.pi, 0.0)
-        return (0.0, math.pi)
+            return (-5 * math.pi / 6, 0.0)
+        return (0.0, 5 * math.pi / 6)
     return None
 
 _MOTOR_TORQUES: dict[str, float] = {
@@ -142,9 +145,9 @@ _MOTOR_TORQUES: dict[str, float] = {
     "knee": config.RL_MOTOR_TORQUE_KNEE,
 }
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Structural constants
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 _SEGMENT_RADIUS = 0.015  # meters, cosmetic half-width for Segment shapes
 _COLLISION_GROUP = 1      # all ragdoll segments share this group
@@ -192,9 +195,9 @@ _ROLE_START = 12
 _ROLE_FINISH = 14
 _ROLE_FOOT_ONLY = 15
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Bone-length computation from training data
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 # COCO 17-keypoint index pairs: [(left_pair), (right_pair)]
 _BONE_PAIRS_COCO: dict[str, list[tuple[int, int]]] = {
@@ -246,9 +249,9 @@ def compute_rl_bone_lengths(
     return result
 
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Ragdoll dataclass
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 @dataclass
 class Ragdoll:
@@ -273,9 +276,9 @@ class Ragdoll:
     torso_com_offset: float = 0.0
 
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Space and ragdoll creation
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def create_space() -> pymunk.Space:
     """Create a Pymunk Space with climbing-wall gravity and damping.
@@ -352,7 +355,7 @@ def create_ragdoll(
     bodies: dict[str, pymunk.Body] = {}
     shapes: dict[str, list[pymunk.Shape]] = {}
 
-    # ── Torso (trunk + head on one body) ───────────────────────────
+    # Torso (trunk + head on one body)
     L_torso = bl["torso"]
     m_trunk = _TRUNK_MASS_FRAC * M
     m_head = _HEAD_MASS_FRAC * M
@@ -384,7 +387,7 @@ def create_ragdoll(
     bodies["torso"] = torso_body
     shapes["torso"] = [trunk_shape, head_shape]
 
-    # ── Limb segments ──────────────────────────────────────────────
+    # Limb segments
     seg_defs = [
         ("left_upper_arm", "upper_arm"),
         ("right_upper_arm", "upper_arm"),
@@ -415,7 +418,7 @@ def create_ragdoll(
         bodies[seg_name] = body
         shapes[seg_name] = [shape]
 
-    # ── Joint anchor helpers ───────────────────────────────────────
+    # Joint anchor helpers
     hsw = bl["half_shoulder_width"]
     hhw = bl["half_hip_width"]
     shoulder_x = L_torso - torso_com
@@ -430,7 +433,7 @@ def create_ragdoll(
         "right_hip": (hip_x, -hhw),
     }
 
-    # ── Joints ─────────────────────────────────────────────────────
+    # Joints
     joint_defs = [
         # (name, parent_key, child_key, parent_anchor, child_seg_type, joint_type)
         ("left_shoulder", "torso", "left_upper_arm",
@@ -474,7 +477,7 @@ def create_ragdoll(
         space.add(pivot, motor)
         joints[name] = (pivot, limit, motor)
 
-    # ── Set initial pose (upright, limbs hanging) ──────────────────
+    # Set initial pose (upright, limbs hanging)
     _set_initial_pose(bodies, joints, torso_anchors, bl, torso_com, position)
 
     return Ragdoll(
@@ -508,7 +511,7 @@ def _set_initial_pose(
     leg_angle = -math.pi / 2
 
     for side in ("left", "right"):
-        # ── Arm chain ──
+        # Arm chain
         shoulder_world = torso.local_to_world(torso_anchors[f"{side}_shoulder"])
         ua = bodies[f"{side}_upper_arm"]
         _place_body(ua, _proximal_local("upper_arm", bl), shoulder_world, arm_angle)
@@ -517,7 +520,7 @@ def _set_initial_pose(
         fa = bodies[f"{side}_forearm"]
         _place_body(fa, _proximal_local("forearm", bl), elbow_world, arm_angle)
 
-        # ── Leg chain ──
+        # Leg chain
         hip_world = torso.local_to_world(torso_anchors[f"{side}_hip"])
         th = bodies[f"{side}_thigh"]
         _place_body(th, _proximal_local("thigh", bl), hip_world, leg_angle)
@@ -527,9 +530,9 @@ def _set_initial_pose(
         _place_body(sh, _proximal_local("shin", bl), knee_world, leg_angle)
 
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Keypoint extraction
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def extract_keypoints(ragdoll: Ragdoll) -> np.ndarray:
     """Read 12 climbing keypoints from current Pymunk body positions.
@@ -569,9 +572,9 @@ def extract_keypoints(ragdoll: Ragdoll) -> np.ndarray:
     return (np.array(pts, dtype=np.float64) * m2bu).astype(np.float32)
 
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Hold attachment / release
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def create_hold_joint(
     ragdoll: Ragdoll,
@@ -645,9 +648,9 @@ def destroy_hold_joint(
     return True
 
 
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Motor control
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def set_motor_rate(ragdoll: Ragdoll, joint_name: str, rate: float) -> None:
     """Set the angular velocity target for a joint's motor.
@@ -671,9 +674,9 @@ def set_motor_rate(ragdoll: Ragdoll, joint_name: str, rate: float) -> None:
     motor.max_force = _MOTOR_TORQUES[joint_type]
     
     
-# ──────────────────────────────────────────────────────────────────────
+################################################
 # Pose initialization (IK-based)
-# ──────────────────────────────────────────────────────────────────────
+################################################
 
 def _solve_ik_2bone(
     root: tuple[float, float],
@@ -750,7 +753,7 @@ def reset_pose(
     hands_m = {k: (v[0] * bu2m, v[1] * bu2m) for k, v in hand_holds.items()}
     feet_m = {k: (v[0] * bu2m, v[1] * bu2m) for k, v in (foot_positions or {}).items()}
 
-    # ── Torso: centred between holds, shoulders below hold level ───
+    # Torso: centred between holds, shoulders below hold level
     all_hand = list(hands_m.values())
     mid_x = sum(p[0] for p in all_hand) / len(all_hand)
     mid_y = sum(p[1] for p in all_hand) / len(all_hand)
@@ -765,7 +768,7 @@ def reset_pose(
     torso.position = (torso_x, torso_y)
     torso.angle = math.pi / 2
 
-    # ── World positions of shoulder and hip joints ─────────────────
+    # World positions of shoulder and hip joints
     hsw = bl["half_shoulder_width"]
     hhw = bl["half_hip_width"]
     shoulder_y = torso_y + shoulder_offset
@@ -780,7 +783,7 @@ def reset_pose(
         "right": (torso_x + hhw, hip_y),
     }
 
-    # ── Arm IK ─────────────────────────────────────────────────────
+    # Arm IK
     for limb, hold_m in hands_m.items():
         side = "left" if "left" in limb else "right"
         shoulder = shoulders[side]
@@ -795,7 +798,7 @@ def reset_pose(
         _place_body(ragdoll.bodies[f"{side}_forearm"],
                     _proximal_local("forearm", bl), elbow, fa_angle)
 
-    # ── Leg IK or straight hang ────────────────────────────────────
+    # Leg IK or straight hang
     for side in ("left", "right"):
         limb = f"{side}_foot"
         hip = hips[side]
@@ -817,12 +820,12 @@ def reset_pose(
         sh = ragdoll.bodies[f"{side}_shin"]
         _place_body(sh, _proximal_local("shin", bl), knee_world, sh_angle)
 
-    # ── Zero all velocities ────────────────────────────────────────
+    # Zero all velocities
     for body in ragdoll.bodies.values():
         body.velocity = (0, 0)
         body.angular_velocity = 0
 
-    # ── Create hold joints (no distance check) ────────────────────
+    # Create hold joints (no distance check)
     all_contacts = {**hand_holds, **(foot_positions or {})}
     for limb, pos_board in all_contacts.items():
         body_name, seg_type = _LIMB_BODIES[limb]
@@ -1577,7 +1580,7 @@ class ClimbingEnv(gymnasium.Env):
 
         return False, False, "running"
 
-    # ── Info ────────────────────────────────────────────────────────
+    # Info
 
     def _build_info(self, outcome: str) -> dict:
         return {
@@ -1592,8 +1595,81 @@ class ClimbingEnv(gymnasium.Env):
             "step_count": self._step_count,
         }
 
-    # ── Keypoint extraction (for evaluation) ────────────────────────
+    # Keypoint extraction (for evaluation)
 
     def extract_episode_keypoints(self) -> np.ndarray:
         """Current-frame keypoints for recording, shape ``(12, 2)``."""
         return extract_keypoints(self._ragdoll)
+    
+    
+def rollout_episode(
+    env: ClimbingEnv,
+    action_fn: callable,
+    route_index: int = 0,
+    max_steps: int | None = None,
+) -> dict:
+    """Run one episode and collect per-step data for rendering/metrics.
+
+    Args:
+        env: ClimbingEnv instance.
+        action_fn: ``(env, step) -> action dict``. Called each step.
+        route_index: Which route to reset with.
+
+    Returns:
+        Dict with keys ``poses``, ``head_positions``, ``targets``,
+        ``cog_positions``, ``support_polygons``, ``rewards``,
+        ``outcome``, ``info``.  Each list has one entry per step
+        (including the initial reset frame).
+    """
+    obs, info = env.reset(options={"route_index": route_index})
+    m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
+
+    poses, head_positions, targets = [], [], []
+    cog_positions, support_polygons = [], []
+    rewards = []
+
+    def snapshot():
+        poses.append(extract_keypoints(env._ragdoll))
+        head_positions.append(extract_head_position(env._ragdoll))
+        t = env._current_target()
+        targets.append((t["x"], t["y"]))
+        cog_positions.append(_compute_cog_meters(env._ragdoll) * m2bu)
+
+        anchored = []
+        for limb in _LIMB_NAMES:
+            idx = env._anchor_hold_idx.get(limb)
+            if idx is not None and idx >= 0:
+                anchored.append(env._hold_positions_bu[idx])
+            elif idx == -1:
+                ee_idx = _LIMB_NAMES.index(limb)
+                ee = _get_end_effector_positions_bu(env._ragdoll)
+                anchored.append(ee[ee_idx])
+        support_polygons.append(
+            np.array(anchored) if anchored else np.empty((0, 2)),
+        )
+
+    snapshot()
+    outcome = "running"
+    step = 0
+
+    while max_steps is None or step < max_steps:
+        action = action_fn(env, step)
+        obs, reward, terminated, truncated, info = env.step(action)
+        rewards.append(reward)
+        snapshot()
+        step += 1
+        if terminated or truncated:
+            outcome = info["outcome"]
+            break
+
+    return {
+        "poses": poses,
+        "head_positions": head_positions,
+        "targets": targets,
+        "cog_positions": cog_positions,
+        "support_polygons": support_polygons,
+        "rewards": rewards,
+        "outcome": outcome,
+        "info": info,
+        "route_holds": env._routes[route_index].holds,
+    }
