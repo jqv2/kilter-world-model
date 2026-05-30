@@ -182,7 +182,8 @@ ROLLOUT_HOLD_TIMEOUT = 120               # advance to next hold after this many 
 RL_BOARD_UNIT_TO_METERS = 0.025       # 4 board units = 10 cm
 RL_WALL_ANGLE_DEG = 30.0              # overhang angle (degrees)
 RL_GRAVITY = 9.81                     # m/s^2
-RL_PHYSICS_HZ = 60                    # Pymunk substeps per env step
+RL_PHYSICS_HZ = 60                    # physics simulation rate (timestep = 1/60 s)
+RL_CONTROL_HZ = 10                    # agent decisions per second of sim time
 RL_BODY_MASS_KG = 77.0                # total ragdoll mass
 RL_SPACE_DAMPING = 0.95               # global velocity damping (1.0 = none)
 RL_BONE_LENGTH_PERCENTILE = 95.0      # percentile for bone length estimation
@@ -196,6 +197,25 @@ RL_MAX_MOTOR_SPEED = 5.0              # rad/s, joint motor speed cap
 
 RL_GRIP_MAX_FORCE = 4000.0            # Newtons, per hold joint
 RL_GRAB_THRESHOLD = 2.0               # board units, max distance to grab a hold
+
+# RL Baseline — Environment
+RL_STEP_LIMIT = 500
+RL_HOLD_JITTER = 0.5               # board units, ±random offset per hold per reset
+RL_GROUND_Y = -15.0                # board units, ground level below board origin
+RL_SETTLE_STEPS = 30               # Pymunk substeps during reset to find equilibrium
+RL_MOTOR_GAIN = 10.0               # proportional gain for motor target chasing
+
+# RL Baseline — Rewards
+RL_REWARD_STEP_PENALTY = -0.01
+RL_REWARD_ARRIVAL_BONUS = 10.0
+RL_REWARD_FINISH_BONUS = 50.0
+RL_REWARD_FOOT_PROXIMITY = 0.05
+RL_FOOT_PROXIMITY_ENABLED = True
+RL_CONTACT_REWARD_COG_INSIDE = 0.0
+RL_CONTACT_COG_DISTANCE_SCALE = -0.02
+RL_CONTACT_PENALTY_2HANDS = -0.2
+RL_CONTACT_PENALTY_1HAND = -1.0
+RL_CONTACT_PENALTY_TERMINAL = -5.0
 
 def get_device(override: str | None = None) -> "torch.device":
     """Auto-detect best available device, or use override if given."""

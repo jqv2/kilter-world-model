@@ -28,11 +28,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pymunk
+import gymnasium
+from gymnasium import spaces
+from models.world_model import resolve_hold_sequence_and_targets
+from pipeline.routes import load_hold_order_edit, BOARD_X_MIN, BOARD_X_MAX, BOARD_Y_MIN, BOARD_Y_MAX
 
 import config
 
 # ──────────────────────────────────────────────────────────────────────
-# De Leva (1996) mass fractions — combined segments for the ragdoll
+# De Leva (1996) mass fractions. Combined segments for the ragdoll
 # ──────────────────────────────────────────────────────────────────────
 # torso  = head (0.0694) + trunk (0.4346)  = 0.5040
 # thigh  = thigh                            = 0.1416  (×2)
@@ -118,13 +122,13 @@ def _get_joint_limits(joint_name: str) -> tuple[float, float] | None:
 
     Elbows are side-dependent: bending is clockwise on the left
     (negative relative angle) and counter-clockwise on the right.
-    Knees get the full 360° range but cannot do multiple revolutions.
+    Knees allow full (-π, π) range for drop-knees and heel hooks.
     Hips and shoulders rotate freely (no limit joint created).
     """
     if "shoulder" in joint_name or "hip" in joint_name:
         return None
     if "knee" in joint_name:
-        return (-math.pi, math.pi)
+        return (-5 * math.pi / 6, 5 * math.pi / 6)
     if "elbow" in joint_name:
         if "left" in joint_name:
             return (-math.pi, 0.0)
@@ -145,13 +149,48 @@ _MOTOR_TORQUES: dict[str, float] = {
 _SEGMENT_RADIUS = 0.015  # meters, cosmetic half-width for Segment shapes
 _COLLISION_GROUP = 1      # all ragdoll segments share this group
 
-# Limb-name → (end-effector body key, segment type for that body)
+# Limb-name -> (end-effector body key, segment type for that body)
 _LIMB_BODIES: dict[str, tuple[str, str]] = {
     "left_hand": ("left_forearm", "forearm"),
     "right_hand": ("right_forearm", "forearm"),
     "left_foot": ("left_shin", "shin"),
     "right_foot": ("right_shin", "shin"),
 }
+
+# Ordered names for vectorized observation/action
+_JOINT_NAMES = [
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "left_hip", "right_hip",
+    "left_knee", "right_knee",
+]
+_LIMB_NAMES = ["left_hand", "right_hand", "left_foot", "right_foot"]
+
+# Joint name -> (parent body name, child body name)
+_JOINT_BODIES = {
+    "left_shoulder": ("torso", "left_upper_arm"),
+    "right_shoulder": ("torso", "right_upper_arm"),
+    "left_elbow": ("left_upper_arm", "left_forearm"),
+    "right_elbow": ("right_upper_arm", "right_forearm"),
+    "left_hip": ("torso", "left_thigh"),
+    "right_hip": ("torso", "right_thigh"),
+    "left_knee": ("left_thigh", "left_shin"),
+    "right_knee": ("right_thigh", "right_shin"),
+}
+
+# Canonical role mapping (same as routes.py holds_to_array)
+_ROLE_MAP = {
+    12: 12, 13: 13, 14: 14, 15: 15,
+    20: 12, 21: 13, 22: 14, 23: 15,
+    24: 12, 25: 13, 26: 14, 27: 15,
+    28: 12, 29: 13, 30: 14, 31: 15,
+    32: 12, 33: 13, 34: 14, 35: 15,
+    42: 12, 43: 13, 44: 14, 45: 15,
+}
+
+_ROLE_START = 12
+_ROLE_FINISH = 14
+_ROLE_FOOT_ONLY = 15
 
 # ──────────────────────────────────────────────────────────────────────
 # Bone-length computation from training data
@@ -216,11 +255,11 @@ class Ragdoll:
     """All Pymunk references for the 9-segment ragdoll.
 
     Attributes:
-        bodies: Segment name → ``pymunk.Body``.
-        shapes: Segment name → list of ``pymunk.Shape``.
-        joints: Joint name → ``(PivotJoint, RotaryLimitJoint, SimpleMotor)``.
-        hold_joints: Limb name → active hold ``PivotJoint`` (mutable).
-        bone_lengths_m: Bone name → length in metres.
+        bodies: Segment name -> ``pymunk.Body``.
+        shapes: Segment name -> list of ``pymunk.Shape``.
+        joints: Joint name -> ``(PivotJoint, RotaryLimitJoint, SimpleMotor)``.
+        hold_joints: Limb name -> active hold ``PivotJoint`` (mutable).
+        bone_lengths_m: Bone name -> length in metres.
         torso_com_offset: Distance from hip-center to torso CoM along
             the torso's local x-axis (metres).  Needed for keypoint
             extraction and hold-joint anchoring.
@@ -383,7 +422,7 @@ def create_ragdoll(
     hip_x = -torso_com
 
     # Torso-local anchors (x = along spine, y = perpendicular)
-    # When torso angle = π/2: local +y → world −x, so positive y = left.
+    # When torso angle = π/2: local +y -> world −x, so positive y = left.
     torso_anchors = {
         "left_shoulder": (shoulder_x, hsw),
         "right_shoulder": (shoulder_x, -hsw),
@@ -628,7 +667,7 @@ def set_motor_rate(ragdoll: Ragdoll, joint_name: str, rate: float) -> None:
     _, _, motor = ragdoll.joints[joint_name]
     motor.rate = max(-config.RL_MAX_MOTOR_SPEED, min(config.RL_MAX_MOTOR_SPEED, rate))
     # Infer joint type from name and set the configured torque limit
-    joint_type = joint_name.split("_", 1)[1]  # "left_shoulder" → "shoulder"
+    joint_type = joint_name.split("_", 1)[1]  # "left_shoulder" -> "shoulder"
     motor.max_force = _MOTOR_TORQUES[joint_type]
     
     
@@ -650,7 +689,7 @@ def _solve_ik_2bone(
         target: End-effector target (wrist or ankle) in metres.
         len_a: Upper bone length (upper arm or thigh).
         len_b: Lower bone length (forearm or shin).
-        bend_sign: -1 bends the joint clockwise from the root→target
+        bend_sign: -1 bends the joint clockwise from the root->target
             line (elbows down), +1 bends counter-clockwise (knees
             forward).
 
@@ -692,14 +731,12 @@ def reset_pose(
     hanging depth, and creates hold joints for all specified contacts.
     Existing hold joints are cleared first.
 
-    Used for Phase 1 testing and Phase 2 episode resets.
-
     Args:
         ragdoll: Ragdoll to reposition.
         space: Pymunk Space containing the ragdoll.
-        hand_holds: Limb name → ``(x, y)`` in board units.
+        hand_holds: Limb name -> ``(x, y)`` in board units.
             e.g. ``{"left_hand": (60, 120), "right_hand": (84, 120)}``.
-        foot_positions: Optional limb name → ``(x, y)`` in board units.
+        foot_positions: Optional limb name -> ``(x, y)`` in board units.
             When omitted, legs hang straight down from the hips.
     """
     bu2m = config.RL_BOARD_UNIT_TO_METERS
@@ -803,7 +840,7 @@ def reset_pose(
 def extract_head_position(ragdoll: Ragdoll) -> np.ndarray:
     """Head centre in board units, for visualization only.
 
-    Not part of the 12 climbing keypoints — the head is drawn as an
+    Not part of the 12 climbing keypoints. The head is drawn as an
     extra element in RL-specific renders.
 
     Returns:
@@ -816,3 +853,747 @@ def extract_head_position(ragdoll: Ragdoll) -> np.ndarray:
     world = torso.local_to_world(head_local)
     m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
     return np.array([world[0] * m2bu, world[1] * m2bu], dtype=np.float32)
+
+
+################################################
+# Route preparation for RL
+################################################
+
+@dataclass
+class RouteConfig:
+    """Pre-processed route for the RL environment.
+
+    Attributes:
+        holds: Route hold dicts with x, y, name, role_id (board units).
+        hold_sequence: Ordered hand-only visit sequence, each dict has
+            x, y, hand ('L'/'R'), and name.
+        start_hands: Maps 'L'/'R' to the hold name each hand starts on.
+            When None, falls back to x-sorted start-role holds.
+    """
+    holds: list[dict]
+    hold_sequence: list[dict]
+    start_hands: dict[str, str] | None = None
+
+
+def prepare_routes_for_rl(
+    dataset: dict,
+) -> tuple[list[RouteConfig], dict[str, float]]:
+    """Prepare route configs and bone lengths from a loaded dataset.
+
+    For each training video, resolves the hand-only hold visit sequence
+    from GT poses and packages it with the route holds.  When a manual
+    hold order override exists, extracts start-hand assignments from it.
+    Skips routes with no detectable hold sequence.
+
+    Args:
+        dataset: Dict from ``load_dataset`` with train_sequences,
+            train_route_holds, train_stems.
+
+    Returns:
+        ``(routes, bone_lengths)`` where *routes* is a list of
+        :class:`RouteConfig` and *bone_lengths* is a dict from
+        :func:`compute_rl_bone_lengths`.
+    """
+
+    bone_lengths = compute_rl_bone_lengths(dataset["train_sequences"])
+
+    routes: list[RouteConfig] = []
+    for seq, route_holds, stem in zip(
+        dataset["train_sequences"],
+        dataset["train_route_holds"],
+        dataset["train_stems"],
+    ):
+        climbing_seq = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
+        hold_seq, _ = resolve_hold_sequence_and_targets(
+            climbing_seq, route_holds, video_stem=stem,
+        )
+        if not hold_seq:
+            continue
+
+        # Extract start-hand assignments from hold order override
+        start_hands = None
+        override = load_hold_order_edit(stem)
+        if override is not None and "start_hands" in override:
+            start_hands = override["start_hands"]
+
+        routes.append(RouteConfig(
+            holds=route_holds,
+            hold_sequence=hold_seq,
+            start_hands=start_hands,
+        ))
+
+    return routes, bone_lengths
+
+
+################################################
+# Geometry helpers (reward computation)
+################################################
+
+
+def _compute_cog_meters(ragdoll: Ragdoll) -> np.ndarray:
+    """Weighted centre of mass from all Pymunk bodies, in metres."""
+    total_mass = 0.0
+    cx, cy = 0.0, 0.0
+    for body in ragdoll.bodies.values():
+        m = body.mass
+        px, py = body.position
+        cx += m * px
+        cy += m * py
+        total_mass += m
+    return np.array([cx / total_mass, cy / total_mass])
+
+
+def _point_segment_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    """Euclidean distance from point *p* to line segment *ab*."""
+    ab = b - a
+    ab_sq = float(np.dot(ab, ab))
+    if ab_sq < 1e-12:
+        return float(np.linalg.norm(p - a))
+    t = np.clip(np.dot(p - a, ab) / ab_sq, 0.0, 1.0)
+    return float(np.linalg.norm(p - (a + t * ab)))
+
+
+def _cog_support_distance(cog: np.ndarray, support: np.ndarray) -> float:
+    """Distance from CoG to the support polygon (convex hull of contacts).
+
+    Returns 0.0 if the CoG is inside the polygon, otherwise the
+    Euclidean distance to the nearest edge.  For 2 contacts the
+    polygon degenerates to a line segment.
+
+    Args:
+        cog: (2,) centre of gravity position.
+        support: (N, 2) anchored end-effector positions, N >= 2.
+    """
+    n = len(support)
+    if n == 2:
+        return _point_segment_dist(cog, support[0], support[1])
+
+    # Order vertices CCW by angle from centroid
+    centroid = support.mean(axis=0)
+    angles = np.arctan2(support[:, 1] - centroid[1],
+                        support[:, 0] - centroid[0])
+    pts = support[np.argsort(angles)]
+
+    # Inside test via cross products (CCW winding -> all crosses ≥ 0)
+    inside = True
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        cross = (b[0] - a[0]) * (cog[1] - a[1]) - (b[1] - a[1]) * (cog[0] - a[0])
+        if cross < 0:
+            inside = False
+            break
+    if inside:
+        return 0.0
+
+    return min(
+        _point_segment_dist(cog, pts[i], pts[(i + 1) % n])
+        for i in range(n)
+    )
+    
+    
+################################################
+# Observation helpers
+################################################
+
+def _get_joint_angle(ragdoll: Ragdoll, joint_name: str) -> float:
+    """Relative angle between parent and child body (radians).
+
+    Normalized to (-π, π) and clamped to joint limits to prevent
+    Pymunk's unwrapped body angles from accumulating past
+    RotaryLimitJoint boundaries or producing unbounded observations.
+    """
+    parent_name, child_name = _JOINT_BODIES[joint_name]
+    raw = ragdoll.bodies[child_name].angle - ragdoll.bodies[parent_name].angle
+    angle = (raw + math.pi) % (2 * math.pi) - math.pi
+    limits = _get_joint_limits(joint_name)
+    if limits is not None:
+        angle = max(limits[0], min(limits[1], angle))
+    return angle
+
+
+def _get_joint_angular_velocity(ragdoll: Ragdoll, joint_name: str) -> float:
+    """Relative angular velocity between parent and child (rad/s)."""
+    parent_name, child_name = _JOINT_BODIES[joint_name]
+    return (ragdoll.bodies[child_name].angular_velocity
+            - ragdoll.bodies[parent_name].angular_velocity)
+
+
+def _get_end_effector_positions_bu(ragdoll: Ragdoll) -> np.ndarray:
+    """End-effector tip positions in board units, shape (4, 2).
+
+    Order: left_hand, right_hand, left_foot, right_foot.
+    """
+    m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
+    bl = ragdoll.bone_lengths_m
+    pts = []
+    for limb in _LIMB_NAMES:
+        body_name, seg_type = _LIMB_BODIES[limb]
+        body = ragdoll.bodies[body_name]
+        tip_w = body.local_to_world(_tip_local(seg_type, bl))
+        pts.append([tip_w[0] * m2bu, tip_w[1] * m2bu])
+    return np.array(pts, dtype=np.float32)
+
+
+################################################
+# Gymnasium environment
+################################################
+
+def _normalize_pos(xy: np.ndarray) -> np.ndarray:
+    """Normalize board-unit (x, y) positions to ~[0, 1]."""
+    out = xy.copy()
+    out[..., 0] = (out[..., 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
+    out[..., 1] = (out[..., 1] - BOARD_Y_MIN) / (BOARD_Y_MAX - BOARD_Y_MIN)
+    return out
+
+
+class ClimbingEnv(gymnasium.Env):
+    """Gymnasium environment for the RL climbing baseline.
+
+    The agent controls 8 joint-angle deltas and 4 grab/release toggles
+    to climb a Kilter Board route.  Each episode samples a random
+    training route (with optional hold-position jitter), positions the
+    ragdoll at the start holds, and runs until the route is completed,
+    the climber falls, or the step limit is reached.
+
+    The observation is a flat float32 vector containing torso state,
+    joint angles/velocities, end-effector positions, anchor status,
+    padded route holds, and the current target.  See ``_build_obs``
+    for the exact layout.
+
+    Args:
+        routes: List of :class:`RouteConfig` from :func:`prepare_routes_for_rl`.
+        bone_lengths: Dict from :func:`compute_rl_bone_lengths` (board units).
+        seed: RNG seed for route sampling and jitter.
+    """
+
+    metadata = {"render_modes": []}
+
+    def __init__(
+        self,
+        routes: list[RouteConfig],
+        bone_lengths: dict[str, float],
+        seed: int | None = None,
+    ):
+        super().__init__()
+        assert routes, "At least one route is required"
+        self._routes = routes
+        self._bone_lengths = bone_lengths
+
+        obs_dim = (
+            2 + 1 + 2 + 1           # torso pos, angle, vel, ang_vel
+            + 8 + 8                  # joint angles, angular velocities
+            + 8                      # end-effector positions (4 × 2)
+            + 4                      # anchor status
+            + config.MAX_ROUTE_HOLDS * 3  # hold positions (×2) + roles
+            + 2 + 1                  # target position + target hand
+        )
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(obs_dim,), dtype=np.float32,
+        )
+        self.action_space = spaces.Dict({
+            "joint_deltas": spaces.Box(
+                -np.pi, np.pi, shape=(8,), dtype=np.float32,
+            ),
+            "grab_release": spaces.MultiBinary(4),
+        })
+
+        self._rng = np.random.default_rng(seed)
+
+        # Per-episode state (initialised in reset)
+        self._space: pymunk.Space | None = None
+        self._ragdoll: Ragdoll | None = None
+        self._step_count = 0
+        self._cumulative_reward = 0.0
+        self._footholds_established = 0
+        self._prev_target_dist: float | None = None
+
+        # Route state
+        self._hold_positions_bu: np.ndarray | None = None  # (N, 2)
+        self._hold_roles: np.ndarray | None = None          # (N,)
+        self._obs_holds: np.ndarray | None = None            # (MAX, 2) normalised
+        self._obs_roles: np.ndarray | None = None            # (MAX,) normalised
+        self._hold_sequence: list[dict] = []
+        self._seq_idx = 0
+        self._anchor_hold_idx: dict[str, int] = {}  # limb -> hold idx (-1=ground)
+
+    # Observation
+
+    def _build_obs(self) -> np.ndarray:
+        """Flat observation vector.
+
+        Layout (all float32):
+            [0:2]   torso (x, y) normalised
+            [2]     torso angle (rad)
+            [3:5]   torso linear velocity
+            [5]     torso angular velocity
+            [6:14]  joint angles (8)
+            [14:22] joint angular velocities (8)
+            [22:30] end-effector positions (4×2, normalised)
+            [30:34] anchor status per limb
+            [34 : 34+MAX*2]  hold positions (normalised, padded)
+            [+MAX*2 : +MAX*3] hold roles (normalised, padded)
+            [-3:-1] target position (normalised)
+            [-1]    target hand (0=left, 1=right)
+        """
+        rg = self._ragdoll
+        torso = rg.bodies["torso"]
+        m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
+
+        torso_pos_bu = np.array(torso.position, dtype=np.float32) * m2bu
+        torso_pos_norm = _normalize_pos(torso_pos_bu.reshape(1, 2)).ravel()
+        torso_vel = np.array(torso.velocity, dtype=np.float32) * m2bu
+
+        joint_angles = np.array(
+            [_get_joint_angle(rg, j) for j in _JOINT_NAMES], dtype=np.float32,
+        )
+        joint_ang_vels = np.array(
+            [_get_joint_angular_velocity(rg, j) for j in _JOINT_NAMES],
+            dtype=np.float32,
+        )
+
+        ee_pos = _normalize_pos(_get_end_effector_positions_bu(rg)).ravel()
+
+        anchor = np.full(4, -1.0, dtype=np.float32)
+        for i, limb in enumerate(_LIMB_NAMES):
+            if limb in self._anchor_hold_idx:
+                anchor[i] = float(self._anchor_hold_idx[limb])
+
+        target_entry = self._current_target()
+        target_pos = _normalize_pos(
+            np.array([[target_entry["x"], target_entry["y"]]], dtype=np.float32),
+        ).ravel()
+        target_hand = np.float32(0.0 if target_entry["hand"] == "L" else 1.0)
+
+        return np.concatenate([
+            torso_pos_norm,
+            [torso.angle],
+            torso_vel,
+            [torso.angular_velocity],
+            joint_angles,
+            joint_ang_vels,
+            ee_pos,
+            anchor,
+            self._obs_holds.ravel(),
+            self._obs_roles,
+            target_pos,
+            [target_hand],
+        ]).astype(np.float32)
+
+    # Target tracking
+
+    def _current_target(self) -> dict:
+        """Current target hold dict (x, y, hand, name)."""
+        idx = min(self._seq_idx, len(self._hold_sequence) - 1)
+        return self._hold_sequence[idx]
+
+    def _sequence_complete(self) -> bool:
+        return self._seq_idx >= len(self._hold_sequence)
+
+    # Step
+
+    def step(
+        self, action: dict,
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Run one environment step.
+
+        Args:
+            action: Dict with ``joint_deltas`` (8,) and
+                ``grab_release`` (4,) arrays.
+
+        Returns:
+            (obs, reward, terminated, truncated, info)
+        """
+        joint_deltas = np.asarray(action["joint_deltas"], dtype=np.float32)
+        grab_release = np.asarray(action["grab_release"], dtype=np.int32)
+
+        rg = self._ragdoll
+        space = self._space
+        
+        reward_from_grab = 0.0
+
+        # 1. Apply motor targets
+        for i, jname in enumerate(_JOINT_NAMES):
+            current = _get_joint_angle(rg, jname)
+            target = current + float(joint_deltas[i])
+            limits = _get_joint_limits(jname)
+            if limits is not None:
+                target = max(limits[0], min(limits[1], target))
+            error = target - current
+            rate = np.clip(
+                config.RL_MOTOR_GAIN * error,
+                -config.RL_MAX_MOTOR_SPEED,
+                config.RL_MAX_MOTOR_SPEED,
+            )
+            set_motor_rate(rg, jname, rate)
+
+        # 2. Resolve grab/release
+        for i, limb in enumerate(_LIMB_NAMES):
+            if grab_release[i] == 0:
+                continue
+            if limb in rg.hold_joints:
+                # Release
+                destroy_hold_joint(rg, space, limb)
+                self._anchor_hold_idx.pop(limb, None)
+            else:
+                # Try to grab
+                hold_idx = self._find_nearest_hold(limb)
+                if hold_idx is not None:
+                    pos = self._hold_positions_bu[hold_idx]
+                    if create_hold_joint(rg, space, limb, tuple(pos)):
+                        self._anchor_hold_idx[limb] = hold_idx
+                        reward_from_grab += self._on_grab(limb, hold_idx)
+
+        # 3. Step physics
+        dt = 1.0 / config.RL_PHYSICS_HZ
+        substeps = config.RL_PHYSICS_HZ // config.RL_CONTROL_HZ
+        for _ in range(substeps):
+            space.step(dt)
+
+        # 4. Detect broken grips (force limit exceeded -> drift)
+        bu2m = config.RL_BOARD_UNIT_TO_METERS
+        for limb in list(rg.hold_joints):
+            body_name, seg_type = _LIMB_BODIES[limb]
+            body = rg.bodies[body_name]
+            tip_w = body.local_to_world(_tip_local(seg_type, rg.bone_lengths_m))
+            joint = rg.hold_joints[limb]
+            anchor_w = joint.b.local_to_world(joint.anchor_b)
+            drift = math.hypot(tip_w[0] - anchor_w[0], tip_w[1] - anchor_w[1])
+            if drift / bu2m > config.RL_GRAB_THRESHOLD * 2:
+                destroy_hold_joint(rg, space, limb)
+                self._anchor_hold_idx.pop(limb, None)
+
+        self._step_count += 1
+
+        # 5. Compute reward
+        reward = self._compute_reward() + reward_from_grab
+        self._cumulative_reward += reward
+
+        # 6. Check termination
+        terminated, truncated, outcome = self._check_termination()
+        if terminated and outcome == "fall":
+            reward += config.RL_CONTACT_PENALTY_TERMINAL
+            self._cumulative_reward += config.RL_CONTACT_PENALTY_TERMINAL
+
+        obs = self._build_obs()
+        info = self._build_info(outcome)
+
+        return obs, reward, terminated, truncated, info
+
+    # Reset
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """Reset the environment with a random training route.
+
+        Args:
+            seed: Optional RNG seed.
+            options: Optional dict.  ``route_index`` selects a specific
+                route (for deterministic testing).
+
+        Returns:
+            (obs, info)
+        """
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+
+        options = options or {}
+        route_idx = options.get(
+            "route_index", self._rng.integers(len(self._routes)),
+        )
+        route = self._routes[route_idx]
+
+        # Apply hold jitter
+        jitter = self._rng.uniform(
+            -config.RL_HOLD_JITTER, config.RL_HOLD_JITTER,
+            size=(len(route.holds), 2),
+        )
+        jittered_positions = np.array(
+            [[h["x"], h["y"]] for h in route.holds], dtype=np.float32,
+        ) + jitter
+
+        name_to_jittered = {
+            h["name"]: jittered_positions[i]
+            for i, h in enumerate(route.holds)
+        }
+
+        # Store route state
+        self._hold_positions_bu = jittered_positions
+        self._hold_roles = np.array(
+            [_ROLE_MAP.get(h["role_id"], 13) for h in route.holds],
+            dtype=np.int64,
+        )
+        self._hold_sequence = []
+        for entry in route.hold_sequence:
+            pos = name_to_jittered.get(entry.get("name"))
+            if pos is not None:
+                self._hold_sequence.append(
+                    {**entry, "x": float(pos[0]), "y": float(pos[1])},
+                )
+            else:
+                self._hold_sequence.append(entry)
+
+        # Observation hold arrays (padded + normalised)
+        n_holds = len(self._hold_positions_bu)
+        self._obs_holds = np.zeros(
+            (config.MAX_ROUTE_HOLDS, 2), dtype=np.float32,
+        )
+        self._obs_holds[:n_holds] = _normalize_pos(self._hold_positions_bu)
+        self._obs_roles = np.zeros(config.MAX_ROUTE_HOLDS, dtype=np.float32)
+        self._obs_roles[:n_holds] = self._hold_roles / 15.0
+
+        if route.start_hands is not None:
+            hand_holds = {
+                "left_hand": tuple(name_to_jittered[route.start_hands["L"]]),
+                "right_hand": tuple(name_to_jittered[route.start_hands["R"]]),
+            }
+        else:
+            # Fallback: start-role holds sorted by x (lower x = left)
+            start_indices = [
+                i for i, r in enumerate(self._hold_roles) if r == _ROLE_START
+            ]
+            if len(start_indices) < 2:
+                start_indices = list(range(min(2, n_holds)))
+            start_positions = self._hold_positions_bu[start_indices[:2]]
+            sorted_starts = start_positions[np.argsort(start_positions[:, 0])]
+            hand_holds = {
+                "left_hand": tuple(sorted_starts[0]),
+                "right_hand": tuple(sorted_starts[-1]),
+            }
+            
+        # Ground foot positions: shoulder-width apart below start holds
+        hand_positions = np.array(list(hand_holds.values()))
+        mid_x = float(hand_positions[:, 0].mean())
+        hsw = self._bone_lengths["half_shoulder_width"]
+        foot_positions = {
+            "left_foot": (mid_x - hsw, config.RL_GROUND_Y),
+            "right_foot": (mid_x + hsw, config.RL_GROUND_Y),
+        }
+
+        # Create physics world + ragdoll
+        self._space = create_space()
+        self._ragdoll = create_ragdoll(
+            self._space, self._bone_lengths,
+        )
+        reset_pose(
+            self._ragdoll, self._space, hand_holds, foot_positions,
+        )
+
+        # Settle physics
+        dt = 1.0 / config.RL_PHYSICS_HZ
+        for _ in range(config.RL_SETTLE_STEPS):
+            self._space.step(dt)
+
+        # Track anchor state
+        self._anchor_hold_idx = {}
+        for limb, hold_pos_bu in hand_holds.items():
+            idx = self._nearest_hold_index(np.array(hold_pos_bu))
+            if idx is not None:
+                self._anchor_hold_idx[limb] = idx
+        for limb in foot_positions:
+            self._anchor_hold_idx[limb] = -1  # ground sentinel
+
+        # Episode bookkeeping
+        self._seq_idx = 0
+        self._step_count = 0
+        self._cumulative_reward = 0.0
+        self._footholds_established = 0
+        self._prev_target_dist = self._target_distance()
+
+        return self._build_obs(), self._build_info("running")
+
+    # Grab helpers
+
+    def _find_nearest_hold(self, limb: str) -> int | None:
+        """Find nearest grabbable hold for *limb*, or None."""
+        ee_pos = _get_end_effector_positions_bu(self._ragdoll)
+        limb_idx = _LIMB_NAMES.index(limb)
+        pos = ee_pos[limb_idx]
+        is_hand = "hand" in limb
+
+        dists = np.linalg.norm(self._hold_positions_bu - pos, axis=1)
+        for idx in np.argsort(dists):
+            if dists[idx] > config.RL_GRAB_THRESHOLD:
+                return None
+            if is_hand and self._hold_roles[idx] == _ROLE_FOOT_ONLY:
+                continue
+            return int(idx)
+        return None
+
+    def _nearest_hold_index(self, pos_bu: np.ndarray) -> int | None:
+        """Index of nearest hold to a board-unit position (no threshold)."""
+        if len(self._hold_positions_bu) == 0:
+            return None
+        dists = np.linalg.norm(self._hold_positions_bu - pos_bu, axis=1)
+        return int(np.argmin(dists))
+
+    def _on_grab(self, limb: str, hold_idx: int) -> float:
+        """Bookkeeping after a successful grab.
+
+        Returns:
+            Bonus reward earned (arrival or finish), 0.0 otherwise.
+        """
+        bonus = 0.0
+        if "foot" in limb and hold_idx >= 0:
+            self._footholds_established += 1
+
+        if self._seq_idx < len(self._hold_sequence):
+            target = self._current_target()
+            expected_limb = "left_hand" if target["hand"] == "L" else "right_hand"
+            if limb == expected_limb:
+                target_pos = np.array([target["x"], target["y"]])
+                hold_pos = self._hold_positions_bu[hold_idx]
+                if np.linalg.norm(hold_pos - target_pos) < config.RL_GRAB_THRESHOLD:
+                    self._seq_idx += 1
+                    self._prev_target_dist = self._target_distance()
+                    bonus = config.RL_REWARD_ARRIVAL_BONUS
+                    if self._sequence_complete():
+                        bonus += config.RL_REWARD_FINISH_BONUS
+        return bonus
+
+    # Reward
+
+    def _target_distance(self) -> float:
+        """Distance from target wrist to target hold (board units)."""
+        if self._sequence_complete():
+            return 0.0
+        target = self._current_target()
+        target_limb_idx = 0 if target["hand"] == "L" else 1  # index into ee
+        ee = _get_end_effector_positions_bu(self._ragdoll)
+        hold = np.array([target["x"], target["y"]])
+        return float(np.linalg.norm(ee[target_limb_idx] - hold))
+
+    def _compute_reward(self) -> float:
+        """Compute shaped reward for the current step."""
+        reward = config.RL_REWARD_STEP_PENALTY
+
+        # Hand proximity: distance reduction toward target
+        if not self._sequence_complete():
+            curr_dist = self._target_distance()
+            if self._prev_target_dist is not None:
+                reward += self._prev_target_dist - curr_dist
+            self._prev_target_dist = curr_dist
+
+        # Foot proximity: active only when BOTH feet off wall holds
+        if config.RL_FOOT_PROXIMITY_ENABLED:
+            feet_on_wall = sum(
+                1 for limb in ("left_foot", "right_foot")
+                if self._anchor_hold_idx.get(limb, -1) >= 0
+            )
+            if feet_on_wall == 0:
+                ee = _get_end_effector_positions_bu(self._ragdoll)
+                for foot_idx in (2, 3):  # left_foot, right_foot
+                    foot_pos = ee[foot_idx]
+                    if len(self._hold_positions_bu) > 0:
+                        dists = np.linalg.norm(
+                            self._hold_positions_bu - foot_pos, axis=1,
+                        )
+                        min_dist = float(dists.min())
+                        # Use previous min dist if available; approximate
+                        # with a small per-step bonus inversely scaled
+                        reward += config.RL_REWARD_FOOT_PROXIMITY / max(min_dist, 1.0)
+
+        # Contact / stability
+        reward += self._contact_stability_reward()
+
+        return reward
+
+    def _contact_stability_reward(self) -> float:
+        """Tiered contact reward based on anchor configuration."""
+        hand_contacts = sum(
+            1 for limb in ("left_hand", "right_hand")
+            if limb in self._anchor_hold_idx
+        )
+        foot_contacts = sum(
+            1 for limb in ("left_foot", "right_foot")
+            if limb in self._anchor_hold_idx
+        )
+
+        if hand_contacts == 0:
+            return 0.0  # will be terminated
+
+        if foot_contacts == 0:
+            if hand_contacts == 2:
+                return config.RL_CONTACT_PENALTY_2HANDS
+            return config.RL_CONTACT_PENALTY_1HAND
+
+        # At least 1 hand + 1 foot on wall: CoG-based signal
+        m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
+        cog = _compute_cog_meters(self._ragdoll) * m2bu
+
+        anchored_pos = []
+        for limb in _LIMB_NAMES:
+            idx = self._anchor_hold_idx.get(limb)
+            if idx is not None and idx >= 0:
+                anchored_pos.append(self._hold_positions_bu[idx])
+            elif idx == -1:
+                # ground position, use end-effector position
+                ee_idx = _LIMB_NAMES.index(limb)
+                ee = _get_end_effector_positions_bu(self._ragdoll)
+                anchored_pos.append(ee[ee_idx])
+        anchored = np.array(anchored_pos)
+
+        if len(anchored) < 2:
+            return 0.0
+
+        dist = _cog_support_distance(cog, anchored)
+        if dist <= 0.0:
+            return config.RL_CONTACT_REWARD_COG_INSIDE
+        return config.RL_CONTACT_COG_DISTANCE_SCALE * dist
+
+    # Termination
+
+    def _check_termination(self) -> tuple[bool, bool, str]:
+        """Check episode end conditions.
+
+        Returns:
+            (terminated, truncated, outcome) where outcome is one of
+            ``"running"``, ``"success"``, ``"fall"``, ``"timeout"``.
+        """
+        hand_contacts = sum(
+            1 for limb in ("left_hand", "right_hand")
+            if limb in self._ragdoll.hold_joints
+        )
+
+        if hand_contacts == 0:
+            return True, False, "fall"
+
+        # Success: both hands on finish holds
+        if self._sequence_complete():
+            hands_on_finish = all(
+                self._anchor_hold_idx.get(limb) is not None
+                and self._anchor_hold_idx[limb] >= 0
+                and self._hold_roles[self._anchor_hold_idx[limb]] == _ROLE_FINISH
+                for limb in ("left_hand", "right_hand")
+            )
+            if hands_on_finish:
+                return True, False, "success"
+
+        if self._step_count >= config.RL_STEP_LIMIT:
+            return False, True, "timeout"
+
+        return False, False, "running"
+
+    # ── Info ────────────────────────────────────────────────────────
+
+    def _build_info(self, outcome: str) -> dict:
+        return {
+            "holds_visited": self._seq_idx,
+            "total_holds": len(self._hold_sequence),
+            "hold_visit_rate": (
+                self._seq_idx / max(len(self._hold_sequence), 1)
+            ),
+            "footholds_established": self._footholds_established,
+            "outcome": outcome,
+            "cumulative_reward": self._cumulative_reward,
+            "step_count": self._step_count,
+        }
+
+    # ── Keypoint extraction (for evaluation) ────────────────────────
+
+    def extract_episode_keypoints(self) -> np.ndarray:
+        """Current-frame keypoints for recording, shape ``(12, 2)``."""
+        return extract_keypoints(self._ragdoll)
