@@ -248,6 +248,7 @@ def draw_skeleton(
     joint_color: tuple = COLOR_JOINT,
     thickness: int = 2,
     joint_radius: int = 4,
+    head_pos: np.ndarray | None = None,
 ) -> None:
     """
     Draw a skeleton on a board image (in-place).
@@ -263,6 +264,8 @@ def draw_skeleton(
         joint_color: BGR color for joint circles.
         thickness: Line thickness in pixels.
         joint_radius: Joint circle radius in pixels.
+        head_pos: Optional (2,) board-space position to draw a head circle.
+            Used by the RL baseline; ignored when None.
     """
     n_kp = keypoints.shape[0]
     skeleton = config.COCO_SKELETON if n_kp == 17 else config.CLIMBING_SKELETON
@@ -275,6 +278,11 @@ def draw_skeleton(
     for kp in keypoints:
         pt = board_to_pixel(kp[0], kp[1], scale, pad)
         cv2.circle(img, pt, joint_radius, joint_color, -1)
+        
+    if head_pos is not None:
+        pt = board_to_pixel(head_pos[0], head_pos[1], scale, pad)
+        head_radius_px = max(joint_radius + 2, int(scale * 0.4))
+        cv2.circle(img, pt, head_radius_px, joint_color, 2)
         
 
 def render_pose_video(

@@ -175,6 +175,28 @@ ROLLOUT_ARRIVAL_THRESHOLD_HAND = 8.0   # relaxed threshold for autoregressive ro
 ROLLOUT_ARRIVAL_THRESHOLD_FOOT = 8.0   # relaxed threshold for autoregressive rollout
 ROLLOUT_HOLD_TIMEOUT = 120               # advance to next hold after this many rollout steps with no arrival
 
+########################
+# RL Baseline — Physics
+########################
+
+RL_BOARD_UNIT_TO_METERS = 0.025       # 4 board units = 10 cm
+RL_WALL_ANGLE_DEG = 30.0              # overhang angle (degrees)
+RL_GRAVITY = 9.81                     # m/s^2
+RL_PHYSICS_HZ = 60                    # Pymunk substeps per env step
+RL_BODY_MASS_KG = 77.0                # total ragdoll mass
+RL_SPACE_DAMPING = 0.95               # global velocity damping (1.0 = none)
+RL_BONE_LENGTH_PERCENTILE = 95.0      # percentile for bone length estimation
+RL_HEAD_RADIUS = 0.10                 # meters
+
+RL_MOTOR_TORQUE_HIP = 200.0           # Nm
+RL_MOTOR_TORQUE_KNEE = 175.0
+RL_MOTOR_TORQUE_SHOULDER = 100.0
+RL_MOTOR_TORQUE_ELBOW = 80.0
+RL_MAX_MOTOR_SPEED = 5.0              # rad/s, joint motor speed cap
+
+RL_GRIP_MAX_FORCE = 4000.0            # Newtons, per hold joint
+RL_GRAB_THRESHOLD = 2.0               # board units, max distance to grab a hold
+
 def get_device(override: str | None = None) -> "torch.device":
     """Auto-detect best available device, or use override if given."""
     if override:
