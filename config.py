@@ -217,6 +217,25 @@ RL_CONTACT_PENALTY_2HANDS = -0.2
 RL_CONTACT_PENALTY_1HAND = -1.0
 RL_CONTACT_PENALTY_TERMINAL = -5.0
 
+# RL Baseline — PPO Training
+RL_PPO_LR = 3e-4
+RL_PPO_BATCH_SIZE = 2048           # frames collected per PPO update
+RL_PPO_MINIBATCH_SIZE = 64
+RL_PPO_EPOCHS = 10                 # SGD passes per PPO update
+RL_PPO_CLIP_EPSILON = 0.2
+RL_PPO_GAMMA = 0.99
+RL_PPO_GAE_LAMBDA = 0.95
+RL_PPO_ENTROPY_COEF = 0.01
+RL_PPO_MAX_GRAD_NORM = 0.5
+RL_HIDDEN_DIM = 128
+RL_HIDDEN_LAYERS = 2
+RL_TOTAL_FRAMES = 1_000_000
+RL_CHECKPOINT_INTERVAL = 50_000
+RL_CHECKPOINT_DIR = DATA_DIR / "rl_checkpoints"
+RL_LOG_DIR = DATA_DIR / "rl_logs"
+RL_EVAL_VIDEO_INTERVAL = 1000        # episodes between eval video renders
+RL_VIZ_DIR = DATA_DIR / "rl_viz"
+
 def get_device(override: str | None = None) -> "torch.device":
     """Auto-detect best available device, or use override if given."""
     if override:

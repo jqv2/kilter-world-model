@@ -872,10 +872,12 @@ class RouteConfig:
             x, y, hand ('L'/'R'), and name.
         start_hands: Maps 'L'/'R' to the hold name each hand starts on.
             When None, falls back to x-sorted start-role holds.
+        stem: Video filename stem this route was derived from.
     """
     holds: list[dict]
     hold_sequence: list[dict]
     start_hands: dict[str, str] | None = None
+    stem: str = ""
 
 
 def prepare_routes_for_rl(
@@ -923,6 +925,7 @@ def prepare_routes_for_rl(
             holds=route_holds,
             hold_sequence=hold_seq,
             start_hands=start_hands,
+            stem=stem,
         ))
 
     return routes, bone_lengths
