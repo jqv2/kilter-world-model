@@ -1055,7 +1055,8 @@ def _normalize_pos(xy: np.ndarray) -> np.ndarray:
 class ClimbingEnv(gymnasium.Env):
     """Gymnasium environment for the RL climbing baseline.
 
-    The agent controls 8 joint-angle deltas and 4 grab/release toggles
+    The agent controls 8 joint-angle deltas and 4 grip state signals
+    (1=engage, 0=disengage)
     to climb a Kilter Board route.  Each episode samples a random
     training route (with optional hold-position jitter), positions the
     ragdoll at the start holds, and runs until the route is completed,
@@ -1111,7 +1112,10 @@ class ClimbingEnv(gymnasium.Env):
         self._step_count = 0
         self._cumulative_reward = 0.0
         self._footholds_established = 0
+        self._foot_proximity_disabled = False
+        self._ground_reanchor_disabled = False
         self._prev_target_dist: float | None = None
+        self._last_reward_breakdown: dict[str, float] = {}
 
         # Route state
         self._hold_positions_bu: np.ndarray | None = None  # (N, 2)
@@ -1204,12 +1208,20 @@ class ClimbingEnv(gymnasium.Env):
 
         Args:
             action: Dict with ``joint_deltas`` (8,) and
-                ``grab_release`` (4,) arrays.
+                ``grab_release`` (4,) arrays.  Grip values are
+                absolute: 1=engage (grab if near hold), 0=disengage
+                (release if anchored).
+                Feet can re-anchor to the ground (at ``RL_GROUND_Y``)
+                until any wall hold is grabbed.
 
         Returns:
             (obs, reward, terminated, truncated, info)
         """
-        joint_deltas = np.asarray(action["joint_deltas"], dtype=np.float32)
+        # Clip joint deltas to prevent extreme output deltas
+        joint_deltas = np.clip(
+            np.asarray(action["joint_deltas"], dtype=np.float32),
+            -np.pi, np.pi,
+        )
         grab_release = np.asarray(action["grab_release"], dtype=np.int32)
 
         rg = self._ragdoll
@@ -1234,20 +1246,30 @@ class ClimbingEnv(gymnasium.Env):
 
         # 2. Resolve grab/release
         for i, limb in enumerate(_LIMB_NAMES):
-            if grab_release[i] == 0:
-                continue
-            if limb in rg.hold_joints:
-                # Release
-                destroy_hold_joint(rg, space, limb)
-                self._anchor_hold_idx.pop(limb, None)
-            else:
-                # Try to grab
+            wants_grip = grab_release[i] == 1
+            is_gripping = limb in rg.hold_joints
+
+            if wants_grip and not is_gripping:
+                # Try to grab a route hold
                 hold_idx = self._find_nearest_hold(limb)
                 if hold_idx is not None:
                     pos = self._hold_positions_bu[hold_idx]
                     if create_hold_joint(rg, space, limb, tuple(pos)):
                         self._anchor_hold_idx[limb] = hold_idx
                         reward_from_grab += self._on_grab(limb, hold_idx)
+                elif "foot" in limb and not self._ground_reanchor_disabled:
+                    # Re-anchor to ground if foot is near ground level
+                    ee = _get_end_effector_positions_bu(rg)
+                    foot_idx = _LIMB_NAMES.index(limb)
+                    foot_y = ee[foot_idx][1]
+                    if abs(foot_y - config.RL_GROUND_Y) < config.RL_GRAB_THRESHOLD:
+                        ground_pos = (float(ee[foot_idx][0]), config.RL_GROUND_Y)
+                        if create_hold_joint(rg, space, limb, ground_pos):
+                            self._anchor_hold_idx[limb] = -1
+            elif not wants_grip and is_gripping:
+                # Release
+                destroy_hold_joint(rg, space, limb)
+                self._anchor_hold_idx.pop(limb, None)
 
         # 3. Step physics
         dt = 1.0 / config.RL_PHYSICS_HZ
@@ -1272,6 +1294,7 @@ class ClimbingEnv(gymnasium.Env):
 
         # 5. Compute reward
         reward = self._compute_reward() + reward_from_grab
+        self._last_reward_breakdown["grab_bonus"] = reward_from_grab
         self._cumulative_reward += reward
 
         # 6. Check termination
@@ -1279,6 +1302,7 @@ class ClimbingEnv(gymnasium.Env):
         if terminated and outcome == "fall":
             reward += config.RL_CONTACT_PENALTY_TERMINAL
             self._cumulative_reward += config.RL_CONTACT_PENALTY_TERMINAL
+            self._last_reward_breakdown["fall_penalty"] = config.RL_CONTACT_PENALTY_TERMINAL
 
         obs = self._build_obs()
         info = self._build_info(outcome)
@@ -1297,8 +1321,11 @@ class ClimbingEnv(gymnasium.Env):
 
         Args:
             seed: Optional RNG seed.
-            options: Optional dict.  ``route_index`` selects a specific
+            options: Optional dict.
+                ``route_index`` selects a specific
                 route (for deterministic testing).
+                ``hold_jitter`` overrides the jitter magnitude
+                (default ``RL_HOLD_JITTER``; pass ``0.0`` for eval).
 
         Returns:
             (obs, info)
@@ -1311,10 +1338,12 @@ class ClimbingEnv(gymnasium.Env):
             "route_index", self._rng.integers(len(self._routes)),
         )
         route = self._routes[route_idx]
+        self._route_idx = route_idx
 
         # Apply hold jitter
+        jitter_amount = options.get("hold_jitter", config.RL_HOLD_JITTER)
         jitter = self._rng.uniform(
-            -config.RL_HOLD_JITTER, config.RL_HOLD_JITTER,
+            -jitter_amount, jitter_amount,
             size=(len(route.holds), 2),
         )
         jittered_positions = np.array(
@@ -1370,14 +1399,25 @@ class ClimbingEnv(gymnasium.Env):
                 "right_hand": tuple(sorted_starts[-1]),
             }
             
-        # Ground foot positions: shoulder-width apart below start holds
+        # Ground foot positions: only if legs can reach the ground
         hand_positions = np.array(list(hand_holds.values()))
         mid_x = float(hand_positions[:, 0].mean())
         hsw = self._bone_lengths["half_shoulder_width"]
-        foot_positions = {
-            "left_foot": (mid_x - hsw, config.RL_GROUND_Y),
-            "right_foot": (mid_x + hsw, config.RL_GROUND_Y),
-        }
+        leg_reach = self._bone_lengths["thigh"] + self._bone_lengths["shin"]
+        hand_y_mean = float(hand_positions[:, 1].mean())
+        hip_drop = (self._bone_lengths["torso"]
+                    + 0.7 * (self._bone_lengths["upper_arm"]
+                             + self._bone_lengths["forearm"]))
+        hip_y_approx = hand_y_mean - hip_drop
+        ground_distance = hip_y_approx - config.RL_GROUND_Y
+
+        if ground_distance <= leg_reach:
+            foot_positions = {
+                "left_foot": (mid_x - hsw, config.RL_GROUND_Y),
+                "right_foot": (mid_x + hsw, config.RL_GROUND_Y),
+            }
+        else:
+            foot_positions = None
 
         # Create physics world + ragdoll
         self._space = create_space()
@@ -1399,14 +1439,17 @@ class ClimbingEnv(gymnasium.Env):
             idx = self._nearest_hold_index(np.array(hold_pos_bu))
             if idx is not None:
                 self._anchor_hold_idx[limb] = idx
-        for limb in foot_positions:
-            self._anchor_hold_idx[limb] = -1  # ground sentinel
+        if foot_positions:
+            for limb in foot_positions:
+                self._anchor_hold_idx[limb] = -1  # ground sentinel
 
         # Episode bookkeeping
         self._seq_idx = 0
         self._step_count = 0
         self._cumulative_reward = 0.0
         self._footholds_established = 0
+        self._foot_proximity_disabled = False
+        self._ground_reanchor_disabled = foot_positions is None
         self._prev_target_dist = self._target_distance()
 
         return self._build_obs(), self._build_info("running")
@@ -1439,12 +1482,20 @@ class ClimbingEnv(gymnasium.Env):
     def _on_grab(self, limb: str, hold_idx: int) -> float:
         """Bookkeeping after a successful grab.
 
+        Sets ``_ground_reanchor_disabled`` on any wall hold grab
+        (hand or foot), permanently disabling ground re-anchoring.
+        Sets ``_foot_proximity_disabled`` on wall foothold grab,
+        permanently disabling the foot proximity bonus.
+
         Returns:
             Bonus reward earned (arrival or finish), 0.0 otherwise.
         """
         bonus = 0.0
+        if hold_idx >= 0:
+            self._ground_reanchor_disabled = True
         if "foot" in limb and hold_idx >= 0:
             self._footholds_established += 1
+            self._foot_proximity_disabled = True
 
         if self._seq_idx < len(self._hold_sequence):
             target = self._current_target()
@@ -1473,38 +1524,53 @@ class ClimbingEnv(gymnasium.Env):
         return float(np.linalg.norm(ee[target_limb_idx] - hold))
 
     def _compute_reward(self) -> float:
-        """Compute shaped reward for the current step."""
+        """Compute shaped reward for the current step.
+
+        Foot proximity bonus is latched off permanently once any foot
+        grabs a wall hold (via ``_foot_proximity_disabled``).
+        Stores component breakdown in ``_last_reward_breakdown`` for
+        debug visualization.
+        """
+        bd: dict[str, float] = {}
         reward = config.RL_REWARD_STEP_PENALTY
+        bd["step"] = config.RL_REWARD_STEP_PENALTY
 
         # Hand proximity: distance reduction toward target
+        hand_prox = 0.0
         if not self._sequence_complete():
             curr_dist = self._target_distance()
             if self._prev_target_dist is not None:
-                reward += self._prev_target_dist - curr_dist
+                hand_prox = self._prev_target_dist - curr_dist
             self._prev_target_dist = curr_dist
+        reward += hand_prox
+        bd["hand_prox"] = hand_prox
 
         # Foot proximity: active only when BOTH feet off wall holds
-        if config.RL_FOOT_PROXIMITY_ENABLED:
+        foot_prox = 0.0
+        if config.RL_FOOT_PROXIMITY_ENABLED and not self._foot_proximity_disabled:
             feet_on_wall = sum(
                 1 for limb in ("left_foot", "right_foot")
                 if self._anchor_hold_idx.get(limb, -1) >= 0
             )
             if feet_on_wall == 0:
                 ee = _get_end_effector_positions_bu(self._ragdoll)
-                for foot_idx in (2, 3):  # left_foot, right_foot
+                for foot_idx in (2, 3):
                     foot_pos = ee[foot_idx]
                     if len(self._hold_positions_bu) > 0:
                         dists = np.linalg.norm(
                             self._hold_positions_bu - foot_pos, axis=1,
                         )
                         min_dist = float(dists.min())
-                        # Use previous min dist if available; approximate
-                        # with a small per-step bonus inversely scaled
-                        reward += config.RL_REWARD_FOOT_PROXIMITY / max(min_dist, 1.0)
+                        foot_prox += config.RL_REWARD_FOOT_PROXIMITY / max(min_dist, 1.0)
+        reward += foot_prox
+        bd["foot_prox"] = foot_prox
 
         # Contact / stability
-        reward += self._contact_stability_reward()
+        contact = self._contact_stability_reward()
+        reward += contact
+        bd["contact"] = contact
 
+        self._last_reward_breakdown = bd
         return reward
 
     def _contact_stability_reward(self) -> float:
@@ -1596,6 +1662,7 @@ class ClimbingEnv(gymnasium.Env):
             "outcome": outcome,
             "cumulative_reward": self._cumulative_reward,
             "step_count": self._step_count,
+            "route_stem": self._routes[self._route_idx].stem,
         }
 
     # Keypoint extraction (for evaluation)
@@ -1624,12 +1691,13 @@ def rollout_episode(
         ``outcome``, ``info``.  Each list has one entry per step
         (including the initial reset frame).
     """
-    obs, info = env.reset(options={"route_index": route_index})
+    obs, info = env.reset(options={"route_index": route_index, "hold_jitter": 0.0})
     m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
 
     poses, head_positions, targets = [], [], []
     cog_positions, support_polygons = [], []
     rewards = []
+    reward_breakdowns = []
 
     def snapshot():
         poses.append(extract_keypoints(env._ragdoll))
@@ -1659,6 +1727,7 @@ def rollout_episode(
         action = action_fn(env, step)
         obs, reward, terminated, truncated, info = env.step(action)
         rewards.append(reward)
+        reward_breakdowns.append(dict(env._last_reward_breakdown))
         snapshot()
         step += 1
         if terminated or truncated:
@@ -1672,6 +1741,7 @@ def rollout_episode(
         "cog_positions": cog_positions,
         "support_polygons": support_polygons,
         "rewards": rewards,
+        "reward_breakdowns": reward_breakdowns,
         "outcome": outcome,
         "info": info,
         "route_holds": env._routes[route_index].holds,

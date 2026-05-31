@@ -590,6 +590,7 @@ def render_rl_video(
     scale: int = RENDER_SCALE,
     pad: int = RENDER_PAD,
     interpolate: tuple[int, int] | None = None,
+    reward_breakdowns: list[dict[str, float]] | None = None,
 ) -> None:
     """Render an RL episode as a skeleton overlay video.
 
@@ -619,6 +620,11 @@ def render_rl_video(
             ``physics_hz / control_hz`` smooth frames per input frame.
             The *fps* should then be set to *physics_hz* for real-time
             playback.
+        reward_breakdowns: Per-step reward component dicts with keys
+            ``step``, ``hand_prox``, ``foot_prox``, ``contact``,
+            ``grab_bonus``.  One fewer entry than *poses* (no
+            breakdown for the initial reset frame).  Overlaid as
+            text on each video frame when provided.
     """
     original_bottom = BOARD_EDGES["bottom"]
     if board_y_min is not None:
@@ -645,6 +651,11 @@ def render_rl_video(
                     poses, head_positions, target_positions, cog_positions,
                     support_polygons, segment_cog_positions, substeps,
                 )
+            if reward_breakdowns:
+                interp_bd = []
+                for bd in reward_breakdowns:
+                    interp_bd.extend([bd] * substeps)
+                reward_breakdowns = interp_bd
 
         for i, pose in enumerate(poses):
             frame = board_img.copy()
@@ -678,6 +689,35 @@ def render_rl_video(
             cv2.putText(frame, f"Frame {i}", (10, h - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (200, 200, 200), 1)
+            
+            if reward_breakdowns is not None:
+                # First pose is the reset frame (no breakdown yet)
+                bd_idx = i - 1 if not interpolate else i - (interpolate[0] // interpolate[1])
+                if 0 <= bd_idx < len(reward_breakdowns):
+                    bd = reward_breakdowns[bd_idx]
+                    cumulative_reward = sum(
+                        r.get("step", 0) + r.get("hand_prox", 0)
+                        + r.get("foot_prox", 0) + r.get("contact", 0)
+                        + r.get("grab_bonus", 0)
+                        + r.get("fall_penalty", 0)
+                        for r in reward_breakdowns[:bd_idx + 1]
+                    )
+                    lines = [
+                        f"Total: {sum(bd.values()):+.3f}  Cumulative: {cumulative_reward:+.1f}",
+                        f"hand:{bd.get('hand_prox',0):+.3f}  foot:{bd.get('foot_prox',0):+.3f}",
+                        f"contact:{bd.get('contact',0):+.3f}  step:{bd.get('step',0):.3f}",
+                    ]
+                    grab = bd.get("grab_bonus", 0)
+                    fall = bd.get("fall_penalty", 0)
+                    if grab > 0:
+                        lines.append(f"GRAB BONUS: +{grab:.1f}")
+                    if fall < 0:
+                        lines.append(f"FALL PENALTY: {fall:.1f}")
+
+                    for j, line in enumerate(lines):
+                        cv2.putText(frame, line, (10, h - 30 - (len(lines) - 1 - j) * 18),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                    (180, 255, 180), 1)
 
             writer.write(frame)
 

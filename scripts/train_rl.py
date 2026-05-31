@@ -11,6 +11,7 @@ Usage::
 """
 
 from __future__ import annotations
+from torch.utils.tensorboard import SummaryWriter
 
 import argparse
 import csv
@@ -76,6 +77,56 @@ def _make_eval_action_fn(policy: nn.Module, device: torch.device):
     return action_fn
 
 
+def _render_eval_videos(
+    policy: PolicyNetwork,
+    env: ClimbingEnv,
+    routes: list,
+    reference_routes: list[int],
+    viz_dir: Path,
+    frame_label: str,
+    device: torch.device,
+):
+    """Render deterministic eval rollouts for each reference route.
+
+    Args:
+        policy: Policy network (switched to eval mode internally).
+        env: ClimbingEnv instance.
+        routes: Full list of RouteData objects.
+        reference_routes: Indices into *routes* to render.
+        viz_dir: Root visualization directory (e.g. data/rl_viz).
+        frame_label: Frame/episode prefix (e.g. "ep00100").  Hold
+            counts are appended automatically from rollout info.
+        device: Torch device.
+    """
+    policy.eval()
+    action_fn = _make_eval_action_fn(policy, device)
+    for ref_idx in reference_routes:
+        out_dir = viz_dir / routes[ref_idx].stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        data = rollout_episode(
+            env, action_fn, route_index=ref_idx,
+            max_steps=config.RL_STEP_LIMIT,
+        )
+        hv = data["info"]["holds_visited"]
+        th = data["info"]["total_holds"]
+        filename = f"{frame_label}_{hv}_of_{th}.mp4"
+        render_rl_video(
+            data["poses"],
+            out_dir / filename,
+            route_holds=data["route_holds"],
+            head_positions=data["head_positions"],
+            head_radius_bu=config.RL_HEAD_RADIUS / config.RL_BOARD_UNIT_TO_METERS,
+            target_positions=data["targets"],
+            cog_positions=data["cog_positions"],
+            support_polygons=data["support_polygons"],
+            board_y_min=int(config.RL_GROUND_Y - 5),
+            interpolate=(config.RL_PHYSICS_HZ, config.RL_CONTROL_HZ),
+            fps=float(config.RL_PHYSICS_HZ),
+            title=f"{frame_label} | {data['outcome']}",
+            reward_breakdowns=data.get("reward_breakdowns"),
+        )
+
+
 class PolicyNetwork(nn.Module):
     """Shared encoder with Normal (joint deltas) and Bernoulli (grab) heads."""
 
@@ -95,6 +146,10 @@ class PolicyNetwork(nn.Module):
         _init_weights(self.encoder, final_gain=np.sqrt(2))
         _init_weights(self.cont_mean, final_gain=0.01)
         _init_weights(self.disc_logits, final_gain=0.01)
+        
+        # Bias logits to 2.2. 10% chance to release.
+        # This makes the agent default to "Hold On" instead of randomly dropping.
+        nn.init.constant_(self.disc_logits.bias, 2.2)
 
     def _heads(self, obs: torch.Tensor):
         h = self.encoder(obs)
@@ -206,7 +261,12 @@ class RolloutBuffer:
 ################################################
 
 class MilestoneTracker:
-    """Saves tagged checkpoints on first occurrence of training milestones."""
+    """Saves tagged checkpoints on first occurrence of training milestones.
+
+    Tracks both global milestones (first foothold, first completion,
+    best return, best HVR) and per-route milestones (new max holds
+    visited on a specific route).
+    """
 
     def __init__(self, ckpt_dir: Path):
         self._dir = ckpt_dir
@@ -215,35 +275,65 @@ class MilestoneTracker:
         self._completed = False
         self._best_return = -float("inf")
         self._best_hvr = 0.0
+        self._best_holds_per_route: dict[str, int] = {}
 
     def check(self, info: dict, total_frames: int, save_fn):
         """Check episode info for milestones; call *save_fn(tag)* on hit."""
         fh = info.get("footholds_established", 0)
         hv = info.get("holds_visited", 0)
+        total_holds = info.get("total_holds", 0)
         hvr = info.get("hold_visit_rate", 0.0)
         ret = info.get("cumulative_reward", -float("inf"))
         outcome = info.get("outcome", "")
+        stem = info.get("route_stem", "unknown")
 
+        # Global milestones across all climbs
         if fh > 0 and not self._first_foothold:
             self._first_foothold = True
-            save_fn(f"first_foothold_{total_frames}")
+            save_fn("first_foothold")
 
         for h in range(1, hv + 1):
             if h not in self._holds_reached:
                 self._holds_reached.add(h)
-                save_fn(f"hold_{h}_{total_frames}")
+                save_fn(f"hold_{h}")
 
         if outcome == "success" and not self._completed:
             self._completed = True
-            save_fn(f"first_completion_{total_frames}")
+            save_fn("first_completion")
 
-        if ret > self._best_return:
+        if ret > self._best_return + config.RL_BEST_RETURN_THRESHOLD:
             self._best_return = ret
-            save_fn(f"best_return_{total_frames}")
+            save_fn(f"best_return_r{ret:+.0f}")
 
         if hvr > self._best_hvr:
             self._best_hvr = hvr
-            save_fn(f"best_hvr_{total_frames}")
+            save_fn(f"best_hvr_{hvr:.2f}")
+
+        # Per-route: new max holds visited
+        prev_best = self._best_holds_per_route.get(stem, 0)
+        if hv > prev_best and hv > 0:
+            self._best_holds_per_route[stem] = hv
+            save_fn(f"{hv}_of_{total_holds}")
+            
+    def state_dict(self) -> dict:
+        """Serializable milestone state for checkpointing."""
+        return {
+            "first_foothold": self._first_foothold,
+            "holds_reached": sorted(self._holds_reached),
+            "completed": self._completed,
+            "best_return": self._best_return,
+            "best_hvr": self._best_hvr,
+            "best_holds_per_route": self._best_holds_per_route,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore milestone state from checkpoint."""
+        self._first_foothold = state["first_foothold"]
+        self._holds_reached = set(state["holds_reached"])
+        self._completed = state["completed"]
+        self._best_return = state["best_return"]
+        self._best_hvr = state["best_hvr"]
+        self._best_holds_per_route = state["best_holds_per_route"]
 
 
 ################################################
@@ -257,18 +347,19 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     total_frames: int,
     episode_count: int,
+    milestones: MilestoneTracker | None = None,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "policy": policy.state_dict(),
-            "value": value_net.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "total_frames": total_frames,
-            "episode_count": episode_count,
-        },
-        path,
-    )
+    data = {
+        "policy": policy.state_dict(),
+        "value": value_net.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "total_frames": total_frames,
+        "episode_count": episode_count,
+    }
+    if milestones is not None:
+        data["milestones"] = milestones.state_dict()
+    torch.save(data, path)
 
 
 def load_checkpoint(
@@ -276,12 +367,20 @@ def load_checkpoint(
     policy: PolicyNetwork,
     value_net: ValueNetwork,
     optimizer: torch.optim.Optimizer,
+    milestones: MilestoneTracker | None = None,
 ) -> tuple[int, int]:
-    """Load checkpoint, return (total_frames, episode_count)."""
+    """Load checkpoint, return (total_frames, episode_count).
+
+    Restores milestone state if present in the checkpoint and a
+    tracker is provided.  Older checkpoints without milestone data
+    are loaded normally (tracker starts fresh).
+    """
     ckpt = torch.load(path, weights_only=False)
     policy.load_state_dict(ckpt["policy"])
     value_net.load_state_dict(ckpt["value"])
     optimizer.load_state_dict(ckpt["optimizer"])
+    if milestones is not None and "milestones" in ckpt:
+        milestones.load_state_dict(ckpt["milestones"])
     return ckpt["total_frames"], ckpt["episode_count"]
 
 
@@ -373,15 +472,16 @@ def train(args):
     # Resume from checkpoint if provided
     total_frames = 0
     episode_count = 0
+    ckpt_dir = config.RL_CHECKPOINT_DIR
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    milestones = MilestoneTracker(ckpt_dir)
     if args.resume:
         total_frames, episode_count = load_checkpoint(
-            Path(args.resume), policy, value_net, optimizer,
+            Path(args.resume), policy, value_net, optimizer, milestones,
         )
         print(f"Resumed from {args.resume} at frame {total_frames}")
 
     # Logging
-    ckpt_dir = config.RL_CHECKPOINT_DIR
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir = config.RL_LOG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "train_log.csv"
@@ -394,8 +494,10 @@ def train(args):
     log_writer = csv.DictWriter(log_file, fieldnames=log_fields)
     if log_path.stat().st_size == 0:
         log_writer.writeheader()
+    
+    # Tensorboard
+    tb_writer = SummaryWriter(log_dir=config.DATA_DIR / "tb_logs")
 
-    milestones = MilestoneTracker(ckpt_dir)
     t_start = time.time()
     next_ckpt = total_frames + config.RL_CHECKPOINT_INTERVAL
 
@@ -427,6 +529,11 @@ def train(args):
             total_frames += 1
 
             if done:
+                # Tensorboard logs
+                tb_writer.add_scalar("Rollout/Episode_Return", ep_return, total_frames)
+                tb_writer.add_scalar("Rollout/Episode_Length", ep_length, total_frames)
+                tb_writer.add_scalar("Rollout/Hold_Visit_Rate", info['hold_visit_rate'], total_frames)
+                
                 episode_count += 1
                 log_writer.writerow({
                     "total_frames": total_frames,
@@ -443,11 +550,13 @@ def train(args):
                 log_file.flush()
 
                 def _save_milestone(tag: str):
+                    stem = info.get("route_stem", "unknown")
                     save_checkpoint(
-                        ckpt_dir / f"milestone_{tag}.pt",
+                        ckpt_dir / f"milestone_{total_frames:08d}_{stem}_{tag}.pt",
                         policy, value_net, optimizer, total_frames, episode_count,
+                        milestones,
                     )
-                    print(f"  Milestone: {tag}")
+                    print(f"  Milestone: {tag} (route: {stem})")
 
                 milestones.check(info, total_frames, _save_milestone)
 
@@ -461,28 +570,11 @@ def train(args):
 
                 # Periodic eval video
                 if episode_count % config.RL_EVAL_VIDEO_INTERVAL == 0:
-                    policy.eval()
-                    action_fn = _make_eval_action_fn(policy, device)
-                    for ref_idx in reference_routes:
-                        route_dir = viz_dir / routes[ref_idx].stem
-                        route_dir.mkdir(parents=True, exist_ok=True)
-                        data = rollout_episode(
-                            env, action_fn, route_index=ref_idx,
-                            max_steps=config.RL_STEP_LIMIT,
-                        )
-                        render_rl_video(
-                            data["poses"],
-                            route_dir / f"ep{episode_count:05d}.mp4",
-                            route_holds=data["route_holds"],
-                            head_positions=data["head_positions"],
-                            head_radius_bu=config.RL_HEAD_RADIUS / config.RL_BOARD_UNIT_TO_METERS,
-                            target_positions=data["targets"],
-                            cog_positions=data["cog_positions"],
-                            support_polygons=data["support_polygons"],
-                            board_y_min=int(config.RL_GROUND_Y - 5),
-                            interpolate=(config.RL_PHYSICS_HZ, config.RL_CONTROL_HZ),
-                            title=f"Ep {episode_count} | {data['outcome']}",
-                        )
+                    _render_eval_videos(
+                        policy, env, routes, reference_routes, viz_dir,
+                        frame_label=f"ep{episode_count:05d}",
+                        device=device,
+                    )
                     print(f"  Eval videos saved for episode {episode_count}")
 
                 obs, info = env.reset()
@@ -501,6 +593,9 @@ def train(args):
         value_net.train()
         adv_mean = buf.advantages.mean()
         adv_std = buf.advantages.std() + 1e-8
+
+        n_updates = 0
+        sum_policy_loss, sum_value_loss, sum_entropy = 0.0, 0.0, 0.0
 
         for _ in range(config.RL_PPO_EPOCHS):
             for b_obs, b_cont, b_disc, b_old_lp, b_adv, b_ret in buf.batches(
@@ -536,11 +631,21 @@ def train(args):
                 )
                 optimizer.step()
 
+                n_updates += 1
+                sum_policy_loss += policy_loss.item()
+                sum_value_loss += value_loss.item()
+                sum_entropy += entropy.mean().item()
+
+        tb_writer.add_scalar("Charts/Policy_Loss", sum_policy_loss / n_updates, total_frames)
+        tb_writer.add_scalar("Charts/Value_Loss", sum_value_loss / n_updates, total_frames)
+        tb_writer.add_scalar("Charts/Entropy", sum_entropy / n_updates, total_frames)
+
         # Periodic checkpoint
         if total_frames >= next_ckpt:
             save_checkpoint(
                 ckpt_dir / f"step_{total_frames}.pt",
                 policy, value_net, optimizer, total_frames, episode_count,
+                milestones,
             )
             print(f"  Checkpoint saved at frame {total_frames}")
             next_ckpt += config.RL_CHECKPOINT_INTERVAL
@@ -549,8 +654,10 @@ def train(args):
     save_checkpoint(
         ckpt_dir / "final.pt",
         policy, value_net, optimizer, total_frames, episode_count,
+        milestones,
     )
     log_file.close()
+    tb_writer.close()
     print(f"Training complete: {total_frames} frames, {episode_count} episodes")
 
 

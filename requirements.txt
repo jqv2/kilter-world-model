@@ -8,3 +8,4 @@ matplotlib
 flask
 pymunk
 gymnasium
+tensorboard

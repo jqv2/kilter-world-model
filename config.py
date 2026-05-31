@@ -189,17 +189,17 @@ RL_SPACE_DAMPING = 0.95               # global velocity damping (1.0 = none)
 RL_BONE_LENGTH_PERCENTILE = 95.0      # percentile for bone length estimation
 RL_HEAD_RADIUS = 0.10                 # meters
 
-RL_MOTOR_TORQUE_HIP = 200.0           # Nm
-RL_MOTOR_TORQUE_KNEE = 175.0
-RL_MOTOR_TORQUE_SHOULDER = 100.0
-RL_MOTOR_TORQUE_ELBOW = 80.0
+RL_MOTOR_TORQUE_HIP = 600.0           # Nm (3x human, compensates for 2D)
+RL_MOTOR_TORQUE_KNEE = 525.0
+RL_MOTOR_TORQUE_SHOULDER = 200.0      # Nm (2x human, encourages using feet instead)
+RL_MOTOR_TORQUE_ELBOW = 160.0
 RL_MAX_MOTOR_SPEED = 5.0              # rad/s, joint motor speed cap
 
-RL_GRIP_MAX_FORCE = 4000.0            # Newtons, per hold joint
-RL_GRAB_THRESHOLD = 2.0               # board units, max distance to grab a hold
+RL_GRIP_MAX_FORCE = 15000.0            # Newtons, per hold joint
+RL_GRAB_THRESHOLD = 5.0               # board units, max distance to grab a hold
 
 # RL Baseline — Environment
-RL_STEP_LIMIT = 500
+RL_STEP_LIMIT = 400
 RL_HOLD_JITTER = 0.5               # board units, ±random offset per hold per reset
 RL_GROUND_Y = -15.0                # board units, ground level below board origin
 RL_SETTLE_STEPS = 30               # Pymunk substeps during reset to find equilibrium
@@ -207,20 +207,21 @@ RL_MOTOR_GAIN = 10.0               # proportional gain for motor target chasing
 
 # RL Baseline — Rewards
 RL_REWARD_STEP_PENALTY = -0.01
-RL_REWARD_ARRIVAL_BONUS = 10.0
+RL_REWARD_ARRIVAL_BONUS = 25.0
 RL_REWARD_FINISH_BONUS = 50.0
 RL_REWARD_FOOT_PROXIMITY = 0.05
 RL_FOOT_PROXIMITY_ENABLED = True
 RL_CONTACT_REWARD_COG_INSIDE = 0.0
 RL_CONTACT_COG_DISTANCE_SCALE = -0.02
 RL_CONTACT_PENALTY_2HANDS = -0.2
-RL_CONTACT_PENALTY_1HAND = -1.0
-RL_CONTACT_PENALTY_TERMINAL = -5.0
+RL_CONTACT_PENALTY_1HAND = -0.5
+RL_CONTACT_PENALTY_TERMINAL = -100.0
+RL_BEST_RETURN_THRESHOLD = 2.0        # minimum improvement to trigger best_return milestone
 
 # RL Baseline — PPO Training
 RL_PPO_LR = 3e-4
-RL_PPO_BATCH_SIZE = 2048           # frames collected per PPO update
-RL_PPO_MINIBATCH_SIZE = 64
+RL_PPO_BATCH_SIZE = 8192           # frames collected per PPO update
+RL_PPO_MINIBATCH_SIZE = 256
 RL_PPO_EPOCHS = 10                 # SGD passes per PPO update
 RL_PPO_CLIP_EPSILON = 0.2
 RL_PPO_GAMMA = 0.99
@@ -233,7 +234,7 @@ RL_TOTAL_FRAMES = 1_000_000
 RL_CHECKPOINT_INTERVAL = 50_000
 RL_CHECKPOINT_DIR = DATA_DIR / "rl_checkpoints"
 RL_LOG_DIR = DATA_DIR / "rl_logs"
-RL_EVAL_VIDEO_INTERVAL = 1000        # episodes between eval video renders
+RL_EVAL_VIDEO_INTERVAL = 500        # episodes between eval video renders
 RL_VIZ_DIR = DATA_DIR / "rl_viz"
 
 def get_device(override: str | None = None) -> "torch.device":
