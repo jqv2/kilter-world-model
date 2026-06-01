@@ -131,6 +131,7 @@
         <span id="seqCount" style="float:right; color:#888; font-weight:normal;"></span>
       </div>
       <div class="start-section" id="startSection"></div>
+      <div class="start-section" id="startFeetSection"></div>
       <div class="seq-hint">Click a hold on the video to add it at the current frame. Reorder swaps holds between time slots. Press <b>B</b> to snap the nearest boundary to the playhead. Press <b>H</b> to toggle L/R hand on active hold.</div>
       <div class="seq-list" id="seqList"></div>
     </div>
@@ -195,6 +196,8 @@ let slots = [];               // editable [{name, start}], sorted by start, slot
 let dragBoundary = -1;        // index of slot whose start is being dragged (>=1)
 let playbackRate = 1.0;
 let startHands = { L: null, R: null };  // which hand on which start hold
+let startFeet = { L: null, R: null };
+let footAssignMode = null;  // null | 'L' | 'R'
 
 // ===================== BOARD COORD -> CANVAS PIXEL =====================
 function boardToCanvas(bx, by) {
@@ -338,7 +341,13 @@ async function selectVideo(idx) {
   } else {
     startHands = autoStartHands();
   }
+  if (data.override && data.override.start_feet) {
+    startFeet = data.override.start_feet;
+  } else {
+    startFeet = { L: null, R: null };
+  }
   renderStartHands();
+  renderStartFeet();
 
   renderSequenceList();
   renderVideoList();
@@ -358,7 +367,9 @@ async function resetToAuto() {
     normalizeSlots();
 
     startHands = autoStartHands();
+    startFeet = { L: null, R: null };
     renderStartHands();
+    renderStartFeet();
   
     videos[currentIdx].has_edit = false;
   
@@ -423,6 +434,53 @@ function getStartHolds() {
         drawOverlay();
       });
     }
+  }
+
+  function renderStartFeet() {
+    const section = document.getElementById('startFeetSection');
+  
+    let html = '<div class="start-title">Start Feet</div>';
+    for (const side of ['L', 'R']) {
+      const holdName = startFeet[side];
+      const hold = holdByName[holdName];
+      const color = hold ? ROLE_COLORS_RGB[canonicalRole(hold.role_id)] : '#888';
+      const active = footAssignMode === side;
+      html += `<div class="start-row">
+        <span class="hand-badge" style="${active ? 'background:#4a2a2a;border-color:#f88;color:#f88;' : ''}">${side}F</span>
+        <span class="role-dot" style="background:${color}; width:8px; height:8px; border-radius:50%; display:inline-block;"></span>
+        <span>${holdName || '—'}</span>
+        <button class="swap-btn" onclick="startFootAssign('${side}')">${active ? 'Click hold…' : 'Set'}</button>
+        ${holdName ? `<button class="swap-btn" onclick="clearStartFoot('${side}')">✕</button>` : ''}
+      </div>`;
+    }
+  
+    if (startFeet.L && startFeet.R) {
+      html += '<button class="swap-btn" id="swapFeetBtn">Swap L/R</button>';
+    }
+    section.innerHTML = html;
+  
+    const swapBtn = document.getElementById('swapFeetBtn');
+    if (swapBtn) {
+      swapBtn.addEventListener('click', () => {
+        const tmp = startFeet.L;
+        startFeet.L = startFeet.R;
+        startFeet.R = tmp;
+        renderStartFeet();
+        drawOverlay();
+      });
+    }
+  }
+  
+  function startFootAssign(side) {
+    footAssignMode = footAssignMode === side ? null : side;
+    renderStartFeet();
+  }
+  
+  function clearStartFoot(side) {
+    startFeet[side] = null;
+    footAssignMode = null;
+    renderStartFeet();
+    drawOverlay();
   }
 
 // ===================== SEQUENCE LIST =====================
@@ -551,6 +609,8 @@ function drawOverlay() {
   const startLabels = {};
   if (startHands.L) (startLabels[startHands.L] = startLabels[startHands.L] || []).push('LS');
   if (startHands.R) (startLabels[startHands.R] = startLabels[startHands.R] || []).push('RS');
+  if (startFeet.L) (startLabels[startFeet.L] = startLabels[startFeet.L] || []).push('LF');
+  if (startFeet.R) (startLabels[startFeet.R] = startLabels[startFeet.R] || []).push('RF');
   const activeIdx = activeSlotIdx();
   const activeSlot = activeIdx >= 0 ? slots[activeIdx] : null;
   const activeName = activeSlot ? activeSlot.name : null;
@@ -617,6 +677,15 @@ function onCanvasClick(e) {
   });
 
   if (bestIdx >= 0) {
+    // Foot assignment mode: assign clicked hold instead of appending to sequence
+    if (footAssignMode) {
+      startFeet[footAssignMode] = routeHolds[bestIdx].name;
+      footAssignMode = null;
+      renderStartFeet();
+      drawOverlay();
+      return;
+    }
+
     const lastHand = slots.length ? slots[slots.length - 1].hand : 'R';
     const newHand = lastHand === 'L' ? 'R' : 'L';
     slots.push({ name: routeHolds[bestIdx].name, start: curFrame(), hand: newHand });
@@ -730,6 +799,7 @@ async function saveEdits() {
     route_name: v.route_name || '',
     num_frames: numFrames,
     start_hands: startHands,
+    start_feet: startFeet,
     sequence,
   };
 

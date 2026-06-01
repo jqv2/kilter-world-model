@@ -76,7 +76,6 @@ _COM_PROXIMAL = {
 _HAND_FOREARM_RATIO = 0.4
 _FOOT_SHANK_RATIO = 0.4
 
-
 def _combined_com_fraction(
     main_mass: float,
     main_com_frac: float,
@@ -98,7 +97,6 @@ def _combined_com_fraction(
     return (main_mass * main_com + appendage_mass * appendage_com) / (
         main_mass + appendage_mass
     )
-
 
 # Precomputed CoM fractions for each segment type
 _SEGMENT_COM_FRACS: dict[str, float] = {
@@ -131,7 +129,9 @@ def _get_joint_limits(joint_name: str) -> tuple[float, float] | None:
     if "shoulder" in joint_name or "hip" in joint_name:
         return None
     if "knee" in joint_name:
-        return (-5 * math.pi / 6, 5 * math.pi / 6)
+        if "right" in joint_name:
+            return (-5 * math.pi / 6, 0.0)
+        return (0.0, 5 * math.pi / 6)
     if "elbow" in joint_name:
         if "left" in joint_name:
             return (-5 * math.pi / 6, 0.0)
@@ -212,7 +212,6 @@ _WIDTH_PAIRS_COCO: dict[str, tuple[int, int]] = {
     "half_hip_width": (11, 12),
 }
 
-
 def compute_rl_bone_lengths(
     sequences: list[np.ndarray],
     percentile: float = config.RL_BONE_LENGTH_PERCENTILE,
@@ -230,8 +229,8 @@ def compute_rl_bone_lengths(
         percentile: Percentile to use (e.g. 95 for 95th-percentile).
 
     Returns:
-        Dict with keys ``upper_arm``, ``forearm``, ``thigh``, ``shin``,
-        ``torso``, ``half_shoulder_width``, ``half_hip_width``.
+        Dict with keys upper_arm, forearm, thigh, shin,
+        torso, half_shoulder_width, half_hip_width.
     """
     result: dict[str, float] = {}
 
@@ -248,7 +247,6 @@ def compute_rl_bone_lengths(
 
     return result
 
-
 ################################################
 # Ragdoll dataclass
 ################################################
@@ -258,10 +256,10 @@ class Ragdoll:
     """All Pymunk references for the 9-segment ragdoll.
 
     Attributes:
-        bodies: Segment name -> ``pymunk.Body``.
-        shapes: Segment name -> list of ``pymunk.Shape``.
-        joints: Joint name -> ``(PivotJoint, RotaryLimitJoint, SimpleMotor)``.
-        hold_joints: Limb name -> active hold ``PivotJoint`` (mutable).
+        bodies: Segment name -> pymunk.Body.
+        shapes: Segment name -> list of pymunk.Shape.
+        joints: Joint name -> (PivotJoint, RotaryLimitJoint, SimpleMotor).
+        hold_joints: Limb name -> active hold PivotJoint (mutable).
         bone_lengths_m: Bone name -> length in metres.
         torso_com_offset: Distance from hip-center to torso CoM along
             the torso's local x-axis (metres).  Needed for keypoint
@@ -275,7 +273,6 @@ class Ragdoll:
     bone_lengths_m: dict[str, float] = field(default_factory=dict)
     torso_com_offset: float = 0.0
 
-
 ################################################
 # Space and ragdoll creation
 ################################################
@@ -284,7 +281,7 @@ def create_space() -> pymunk.Space:
     """Create a Pymunk Space with climbing-wall gravity and damping.
 
     Gravity is projected onto the wall plane:
-    ``(0, -g * cos(wall_angle))``.
+    (0, -g * cos(wall_angle)).
     """
     space = pymunk.Space()
     angle_rad = math.radians(config.RL_WALL_ANGLE_DEG)
@@ -292,23 +289,19 @@ def create_space() -> pymunk.Space:
     space.damping = config.RL_SPACE_DAMPING
     return space
 
-
 def _tip_local(seg_type: str, bone_lengths_m: dict[str, float]) -> tuple[float, float]:
     """Local coordinates of the distal tip of a limb segment."""
     L = bone_lengths_m[seg_type]
     return (L * (1.0 - _SEGMENT_COM_FRACS[seg_type]), 0.0)
-
 
 def _proximal_local(seg_type: str, bone_lengths_m: dict[str, float]) -> tuple[float, float]:
     """Local coordinates of the proximal end of a limb segment."""
     L = bone_lengths_m[seg_type]
     return (-L * _SEGMENT_COM_FRACS[seg_type], 0.0)
 
-
 def _distal_local(seg_type: str, bone_lengths_m: dict[str, float]) -> tuple[float, float]:
     """Alias for _tip_local (distal end = tip)."""
     return _tip_local(seg_type, bone_lengths_m)
-
 
 def _place_body(body: pymunk.Body, anchor_local: tuple[float, float],
                 target_world: tuple[float, float], angle: float) -> None:
@@ -320,7 +313,6 @@ def _place_body(body: pymunk.Body, anchor_local: tuple[float, float],
         target_world[0] - (ax * ca - ay * sa),
         target_world[1] - (ax * sa + ay * ca),
     )
-
 
 def create_ragdoll(
     space: pymunk.Space,
@@ -335,14 +327,14 @@ def create_ragdoll(
 
     Args:
         space: Pymunk Space to populate.
-        bone_lengths: Dict from :func:`compute_rl_bone_lengths`
-            (board units).  Keys: ``upper_arm``, ``forearm``, ``thigh``,
-            ``shin``, ``torso``, ``half_shoulder_width``,
-            ``half_hip_width``.
-        position: Initial torso centre-of-mass in metres ``(x, y)``.
+        bone_lengths: Dict from :func:compute_rl_bone_lengths
+            (board units).  Keys: upper_arm, forearm, thigh,
+            shin, torso, half_shoulder_width,
+            half_hip_width.
+        position: Initial torso centre-of-mass in metres (x, y).
 
     Returns:
-        :class:`Ragdoll` with all body, shape, and joint references.
+        :class:Ragdoll with all body, shape, and joint references.
     """
     bu2m = config.RL_BOARD_UNIT_TO_METERS
     M = config.RL_BODY_MASS_KG
@@ -488,7 +480,6 @@ def create_ragdoll(
         torso_com_offset=torso_com,
     )
 
-
 def _set_initial_pose(
     bodies: dict[str, pymunk.Body],
     joints: dict,
@@ -529,7 +520,6 @@ def _set_initial_pose(
         sh = bodies[f"{side}_shin"]
         _place_body(sh, _proximal_local("shin", bl), knee_world, leg_angle)
 
-
 ################################################
 # Keypoint extraction
 ################################################
@@ -538,7 +528,7 @@ def extract_keypoints(ragdoll: Ragdoll) -> np.ndarray:
     """Read 12 climbing keypoints from current Pymunk body positions.
 
     Returns:
-        ``(12, 2)`` float32 array in board units, ordered:
+        (12, 2) float32 array in board units, ordered:
         left_shoulder, right_shoulder, left_elbow, right_elbow,
         left_wrist, right_wrist, left_hip, right_hip, left_knee,
         right_knee, left_ankle, right_ankle.
@@ -571,7 +561,6 @@ def extract_keypoints(ragdoll: Ragdoll) -> np.ndarray:
 
     return (np.array(pts, dtype=np.float64) * m2bu).astype(np.float32)
 
-
 ################################################
 # Hold attachment / release
 ################################################
@@ -586,19 +575,19 @@ def create_hold_joint(
 
     The joint anchors the limb at its current tip position (no
     teleporting).  Rejects the grab if the limb is already anchored
-    or the tip is beyond ``RL_GRAB_THRESHOLD`` of the hold.
+    or the tip is beyond RL_GRAB_THRESHOLD of the hold.
 
     Args:
         ragdoll: Ragdoll to modify.
         space: Pymunk Space containing the ragdoll.
-        limb: ``"left_hand"``, ``"right_hand"``, ``"left_foot"``,
-            or ``"right_foot"``.
-        hold_pos_board: Hold position in board units ``(x, y)``.
+        limb: "left_hand", "right_hand", "left_foot",
+            or "right_foot".
+        hold_pos_board: Hold position in board units (x, y).
 
     Returns:
         True if the joint was created.
-        
-    For initialization (episode reset, testing), use :func:`reset_pose`
+
+    For initialization (episode reset, testing), use :func:reset_pose
     instead, which positions the ragdoll via IK and creates joints
     without a distance check.
     """
@@ -624,7 +613,6 @@ def create_hold_joint(
     ragdoll.hold_joints[limb] = joint
     return True
 
-
 def destroy_hold_joint(
     ragdoll: Ragdoll,
     space: pymunk.Space,
@@ -635,8 +623,8 @@ def destroy_hold_joint(
     Args:
         ragdoll: Ragdoll to modify.
         space: Pymunk Space containing the ragdoll.
-        limb: ``"left_hand"``, ``"right_hand"``, ``"left_foot"``,
-            or ``"right_foot"``.
+        limb: "left_hand", "right_hand", "left_foot",
+            or "right_foot".
 
     Returns:
         True if a joint was destroyed, False if the limb was free.
@@ -647,7 +635,6 @@ def destroy_hold_joint(
     space.remove(joint)
     return True
 
-
 ################################################
 # Motor control
 ################################################
@@ -657,23 +644,22 @@ def set_motor_rate(ragdoll: Ragdoll, joint_name: str, rate: float) -> None:
 
     Enables the motor at its configured torque limit.  A rate of 0
     brakes the joint (resists rotation up to max torque).  To fully
-    disable a motor, set ``ragdoll.joints[name][2].max_force = 0``.
+    disable a motor, set ragdoll.joints[name][2].max_force = 0.
 
     Args:
         ragdoll: Ragdoll containing the joint.
-        joint_name: One of ``left_shoulder``, ``right_shoulder``,
-            ``left_elbow``, ``right_elbow``, ``left_hip``,
-            ``right_hip``, ``left_knee``, ``right_knee``.
+        joint_name: One of left_shoulder, right_shoulder,
+            left_elbow, right_elbow, left_hip,
+            right_hip, left_knee, right_knee.
         rate: Target angular velocity in rad/s.  Clamped to
-            ±``RL_MAX_MOTOR_SPEED``.
+            ±RL_MAX_MOTOR_SPEED.
     """
     _, _, motor = ragdoll.joints[joint_name]
     motor.rate = max(-config.RL_MAX_MOTOR_SPEED, min(config.RL_MAX_MOTOR_SPEED, rate))
     # Infer joint type from name and set the configured torque limit
     joint_type = joint_name.split("_", 1)[1]  # "left_shoulder" -> "shoulder"
     motor.max_force = _MOTOR_TORQUES[joint_type]
-    
-    
+
 ################################################
 # Pose initialization (IK-based)
 ################################################
@@ -720,26 +706,36 @@ def _solve_ik_2bone(
     return (root[0] + len_a * math.cos(mid_angle),
             root[1] + len_a * math.sin(mid_angle))
 
-
 def reset_pose(
     ragdoll: Ragdoll,
     space: pymunk.Space,
     hand_holds: dict[str, tuple[float, float]],
     foot_positions: dict[str, tuple[float, float]] | None = None,
 ) -> None:
-    """Position the ragdoll with hands at holds via IK and create joints.
+    """Position the ragdoll at start holds via IK and create joints.
 
-    Solves 2-bone IK for each arm so wrists land exactly at hold
-    positions, positions the torso below the holds at a natural
-    hanging depth, and creates hold joints for all specified contacts.
+    Places the torso at the centroid of all contacts (hands + feet)
+    so the body starts centered rather than hanging at full extension.
+    Arms are allowed to start bent.  Adjusts downward only if a
+    shoulder can't reach its hand hold.
+    
+    For arms, elbows always point outward (right elbow rightward,
+    left elbow leftward) regardless of shoulder-hand geometry.
+
+    For legs, both IK solutions are evaluated and the knee is chosen
+    based on whether the hip is above or below the foot:
+      - Right leg: hip below → smaller knee x, hip above → larger knee x
+      - Left leg:  hip below → larger knee x, hip above → smaller knee x
+    This avoids drop-knee artifacts regardless of the hip-foot geometry.
+
     Existing hold joints are cleared first.
 
     Args:
         ragdoll: Ragdoll to reposition.
         space: Pymunk Space containing the ragdoll.
-        hand_holds: Limb name -> ``(x, y)`` in board units.
-            e.g. ``{"left_hand": (60, 120), "right_hand": (84, 120)}``.
-        foot_positions: Optional limb name -> ``(x, y)`` in board units.
+        hand_holds: Limb name -> (x, y) in board units.
+            e.g. {"left_hand": (60, 120), "right_hand": (84, 120)}.
+        foot_positions: Optional limb name -> (x, y) in board units.
             When omitted, legs hang straight down from the hips.
     """
     bu2m = config.RL_BOARD_UNIT_TO_METERS
@@ -753,16 +749,23 @@ def reset_pose(
     hands_m = {k: (v[0] * bu2m, v[1] * bu2m) for k, v in hand_holds.items()}
     feet_m = {k: (v[0] * bu2m, v[1] * bu2m) for k, v in (foot_positions or {}).items()}
 
-    # Torso: centred between holds, shoulders below hold level
-    all_hand = list(hands_m.values())
-    mid_x = sum(p[0] for p in all_hand) / len(all_hand)
-    mid_y = sum(p[1] for p in all_hand) / len(all_hand)
-
     shoulder_offset = bl["torso"] - ragdoll.torso_com_offset
     arm_reach = bl["upper_arm"] + bl["forearm"]
 
-    torso_x = mid_x
-    torso_y = mid_y - shoulder_offset - 0.7 * arm_reach
+    # ── Torso placement: centroid of all contacts ──
+    all_contacts = list(hands_m.values()) + list(feet_m.values())
+    torso_x = sum(p[0] for p in all_contacts) / len(all_contacts)
+
+    if feet_m:
+        # Center vertically among contacts; clamp so shoulders
+        # don't end up above the highest hand
+        torso_y = sum(p[1] for p in all_contacts) / len(all_contacts)
+        max_hand_y = max(p[1] for p in hands_m.values())
+        torso_y = min(torso_y, max_hand_y - shoulder_offset)
+    else:
+        # No feet: hang below hands
+        mid_y = sum(p[1] for p in hands_m.values()) / len(hands_m)
+        torso_y = mid_y - shoulder_offset - 0.7 * arm_reach
 
     torso = ragdoll.bodies["torso"]
     torso.position = (torso_x, torso_y)
@@ -783,12 +786,45 @@ def reset_pose(
         "right": (torso_x + hhw, hip_y),
     }
 
-    # Arm IK
+    # Lower torso if either arm can't reach its hold
+    for _ in range(10):
+        all_ok = True
+        for limb, hold_m in hands_m.items():
+            side = "left" if "left" in limb else "right"
+            dist = math.hypot(hold_m[0] - shoulders[side][0],
+                              hold_m[1] - shoulders[side][1])
+            if dist >= arm_reach * 0.98:
+                all_ok = False
+                break
+        if all_ok:
+            break
+        torso_y -= 0.05 * arm_reach
+        torso.position = (torso_x, torso_y)
+        shoulder_y = torso_y + shoulder_offset
+        hip_y = torso_y - ragdoll.torso_com_offset
+        shoulders = {
+            "left": (torso_x - hsw, shoulder_y),
+            "right": (torso_x + hsw, shoulder_y),
+        }
+        hips = {
+            "left": (torso_x - hhw, hip_y),
+            "right": (torso_x + hhw, hip_y),
+        }
+
+    # ── Arm IK: elbows always point outward ──
     for limb, hold_m in hands_m.items():
         side = "left" if "left" in limb else "right"
         shoulder = shoulders[side]
-        elbow = _solve_ik_2bone(shoulder, hold_m, bl["upper_arm"], bl["forearm"],
-                                bend_sign=-1.0)
+        elbow_a = _solve_ik_2bone(shoulder, hold_m, bl["upper_arm"], bl["forearm"],
+                                   bend_sign=-1.0)
+        elbow_b = _solve_ik_2bone(shoulder, hold_m, bl["upper_arm"], bl["forearm"],
+                                   bend_sign=1.0)
+        # Right elbow: prefer larger x (outward right)
+        # Left elbow: prefer smaller x (outward left)
+        if side == "left":
+            elbow = elbow_a if elbow_a[0] <= elbow_b[0] else elbow_b
+        else:
+            elbow = elbow_a if elbow_a[0] >= elbow_b[0] else elbow_b
 
         ua_angle = math.atan2(elbow[1] - shoulder[1], elbow[0] - shoulder[0])
         _place_body(ragdoll.bodies[f"{side}_upper_arm"],
@@ -798,15 +834,30 @@ def reset_pose(
         _place_body(ragdoll.bodies[f"{side}_forearm"],
                     _proximal_local("forearm", bl), elbow, fa_angle)
 
-    # Leg IK or straight hang
+    # ── Leg IK: pick knee based on hip-above/below-foot ──
     for side in ("left", "right"):
         limb = f"{side}_foot"
         hip = hips[side]
 
         if limb in feet_m:
             foot_m = feet_m[limb]
-            knee = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
-                                   bend_sign=1.0)
+            knee_a = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
+                                     bend_sign=-1.0)
+            knee_b = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
+                                     bend_sign=1.0)
+            hip_below = hip[1] < foot_m[1]
+            if side == "right":
+                # hip below foot → smaller knee x
+                # hip above foot → larger knee x
+                prefer_smaller_x = hip_below
+            else:
+                # hip below foot → larger knee x
+                # hip above foot → smaller knee x
+                prefer_smaller_x = not hip_below
+            if prefer_smaller_x:
+                knee = knee_a if knee_a[0] <= knee_b[0] else knee_b
+            else:
+                knee = knee_a if knee_a[0] >= knee_b[0] else knee_b
             th_angle = math.atan2(knee[1] - hip[1], knee[0] - hip[0])
             sh_angle = math.atan2(foot_m[1] - knee[1], foot_m[0] - knee[0])
         else:
@@ -826,8 +877,8 @@ def reset_pose(
         body.angular_velocity = 0
 
     # Create hold joints (no distance check)
-    all_contacts = {**hand_holds, **(foot_positions or {})}
-    for limb, pos_board in all_contacts.items():
+    all_contacts_bu = {**hand_holds, **(foot_positions or {})}
+    for limb, pos_board in all_contacts_bu.items():
         body_name, seg_type = _LIMB_BODIES[limb]
         body = ragdoll.bodies[body_name]
         tip_l = _tip_local(seg_type, bl)
@@ -838,8 +889,7 @@ def reset_pose(
         joint.collide_bodies = False
         space.add(joint)
         ragdoll.hold_joints[limb] = joint
-    
-    
+
 def extract_head_position(ragdoll: Ragdoll) -> np.ndarray:
     """Head centre in board units, for visualization only.
 
@@ -857,7 +907,6 @@ def extract_head_position(ragdoll: Ragdoll) -> np.ndarray:
     m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
     return np.array([world[0] * m2bu, world[1] * m2bu], dtype=np.float32)
 
-
 ################################################
 # Route preparation for RL
 ################################################
@@ -872,42 +921,53 @@ class RouteConfig:
             x, y, hand ('L'/'R'), and name.
         start_hands: Maps 'L'/'R' to the hold name each hand starts on.
             When None, falls back to x-sorted start-role holds.
+        start_feet: Maps 'L'/'R' to the hold name each foot starts on.
+            When None, route is skipped (starting feet are required).
         stem: Video filename stem this route was derived from.
     """
     holds: list[dict]
     hold_sequence: list[dict]
     start_hands: dict[str, str] | None = None
+    start_feet: dict[str, str] | None = None
     stem: str = ""
-
 
 def prepare_routes_for_rl(
     dataset: dict,
 ) -> tuple[list[RouteConfig], dict[str, float]]:
     """Prepare route configs and bone lengths from a loaded dataset.
 
-    For each training video, resolves the hand-only hold visit sequence
+    Loads routes from both train and test splits so that any route
+    can be used for evaluation or reference videos.  Use --train-routes
+    to restrict which routes are sampled during training.
+
+    For each video, resolves the hand-only hold visit sequence
     from GT poses and packages it with the route holds.  When a manual
     hold order override exists, extracts start-hand assignments from it.
     Skips routes with no detectable hold sequence.
 
     Args:
-        dataset: Dict from ``load_dataset`` with train_sequences,
+        dataset: Dict from load_dataset with train_sequences,
             train_route_holds, train_stems.
 
     Returns:
-        ``(routes, bone_lengths)`` where *routes* is a list of
-        :class:`RouteConfig` and *bone_lengths* is a dict from
-        :func:`compute_rl_bone_lengths`.
+        (routes, bone_lengths) where *routes* is a list of
+        :class:RouteConfig and *bone_lengths* is a dict from
+        :func:compute_rl_bone_lengths.
     """
 
     bone_lengths = compute_rl_bone_lengths(dataset["train_sequences"])
 
     routes: list[RouteConfig] = []
-    for seq, route_holds, stem in zip(
-        dataset["train_sequences"],
-        dataset["train_route_holds"],
-        dataset["train_stems"],
-    ):
+    all_sequences = list(dataset["train_sequences"])
+    all_route_holds = list(dataset["train_route_holds"])
+    all_stems = list(dataset["train_stems"])
+
+    if "test_sequences" in dataset:
+        all_sequences += list(dataset["test_sequences"])
+        all_route_holds += list(dataset["test_route_holds"])
+        all_stems += list(dataset["test_stems"])
+
+    for seq, route_holds, stem in zip(all_sequences, all_route_holds, all_stems):
         climbing_seq = seq[:, config.CLIMBING_KEYPOINT_INDICES, :]
         hold_seq, _ = resolve_hold_sequence_and_targets(
             climbing_seq, route_holds, video_stem=stem,
@@ -915,26 +975,29 @@ def prepare_routes_for_rl(
         if not hold_seq:
             continue
 
-        # Extract start-hand assignments from hold order override
+        # Extract start-hand and start-feet assignments from hold order override
         start_hands = None
+        start_feet = None
         override = load_hold_order_edit(stem)
-        if override is not None and "start_hands" in override:
-            start_hands = override["start_hands"]
+        if override is not None:
+            if "start_hands" in override:
+                start_hands = override["start_hands"]
+            if "start_feet" in override:
+                start_feet = override["start_feet"]
 
         routes.append(RouteConfig(
             holds=route_holds,
             hold_sequence=hold_seq,
             start_hands=start_hands,
+            start_feet=start_feet,
             stem=stem,
         ))
 
     return routes, bone_lengths
 
-
 ################################################
 # Geometry helpers (reward computation)
 ################################################
-
 
 def _compute_cog_meters(ragdoll: Ragdoll) -> np.ndarray:
     """Weighted centre of mass from all Pymunk bodies, in metres."""
@@ -948,7 +1011,6 @@ def _compute_cog_meters(ragdoll: Ragdoll) -> np.ndarray:
         total_mass += m
     return np.array([cx / total_mass, cy / total_mass])
 
-
 def _point_segment_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     """Euclidean distance from point *p* to line segment *ab*."""
     ab = b - a
@@ -957,7 +1019,6 @@ def _point_segment_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
         return float(np.linalg.norm(p - a))
     t = np.clip(np.dot(p - a, ab) / ab_sq, 0.0, 1.0)
     return float(np.linalg.norm(p - (a + t * ab)))
-
 
 def _cog_support_distance(cog: np.ndarray, support: np.ndarray) -> float:
     """Distance from CoG to the support polygon (convex hull of contacts).
@@ -996,7 +1057,45 @@ def _cog_support_distance(cog: np.ndarray, support: np.ndarray) -> float:
         for i in range(n)
     )
     
-    
+def _segments_intersect(a, b, c, d):
+    """Check if segment AB intersects segment CD using cross products."""
+    def _cross2d(o, p, q):
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+    d1 = _cross2d(c, d, a)
+    d2 = _cross2d(c, d, b)
+    d3 = _cross2d(a, b, c)
+    d4 = _cross2d(a, b, d)
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        return True
+    return False
+
+
+def _is_valid_support_quad(anchored_positions: dict[str, np.ndarray]) -> bool:
+    """Check if 4-contact support polygon is non-self-intersecting.
+
+    Uses fixed anatomical winding: LH → RH → RF → LF.  If opposite
+    edges of this quadrilateral cross, the body configuration is
+    nonsensical (e.g. foot above both hands) and the polygon is invalid.
+
+    Args:
+        anchored_positions: Maps limb name to (2,) board-unit position.
+            Must contain all four limbs.
+
+    Returns:
+        True if the quadrilateral is simple (valid support base).
+    """
+    lh = anchored_positions["left_hand"]
+    rh = anchored_positions["right_hand"]
+    rf = anchored_positions["right_foot"]
+    lf = anchored_positions["left_foot"]
+    # Opposite edge pairs: (LH→RH vs RF→LF) and (RH→RF vs LF→LH)
+    if _segments_intersect(lh, rh, rf, lf):
+        return False
+    if _segments_intersect(rh, rf, lf, lh):
+        return False
+    return True
+
 ################################################
 # Observation helpers
 ################################################
@@ -1016,13 +1115,11 @@ def _get_joint_angle(ragdoll: Ragdoll, joint_name: str) -> float:
         angle = max(limits[0], min(limits[1], angle))
     return angle
 
-
 def _get_joint_angular_velocity(ragdoll: Ragdoll, joint_name: str) -> float:
     """Relative angular velocity between parent and child (rad/s)."""
     parent_name, child_name = _JOINT_BODIES[joint_name]
     return (ragdoll.bodies[child_name].angular_velocity
             - ragdoll.bodies[parent_name].angular_velocity)
-
 
 def _get_end_effector_positions_bu(ragdoll: Ragdoll) -> np.ndarray:
     """End-effector tip positions in board units, shape (4, 2).
@@ -1039,7 +1136,6 @@ def _get_end_effector_positions_bu(ragdoll: Ragdoll) -> np.ndarray:
         pts.append([tip_w[0] * m2bu, tip_w[1] * m2bu])
     return np.array(pts, dtype=np.float32)
 
-
 ################################################
 # Gymnasium environment
 ################################################
@@ -1050,7 +1146,6 @@ def _normalize_pos(xy: np.ndarray) -> np.ndarray:
     out[..., 0] = (out[..., 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
     out[..., 1] = (out[..., 1] - BOARD_Y_MIN) / (BOARD_Y_MAX - BOARD_Y_MIN)
     return out
-
 
 class ClimbingEnv(gymnasium.Env):
     """Gymnasium environment for the RL climbing baseline.
@@ -1064,12 +1159,12 @@ class ClimbingEnv(gymnasium.Env):
 
     The observation is a flat float32 vector containing torso state,
     joint angles/velocities, end-effector positions, anchor status,
-    padded route holds, and the current target.  See ``_build_obs``
+    padded route holds, and the current target.  See _build_obs
     for the exact layout.
 
     Args:
-        routes: List of :class:`RouteConfig` from :func:`prepare_routes_for_rl`.
-        bone_lengths: Dict from :func:`compute_rl_bone_lengths` (board units).
+        routes: List of :class:RouteConfig from :func:prepare_routes_for_rl.
+        bone_lengths: Dict from :func:compute_rl_bone_lengths (board units).
         seed: RNG seed for route sampling and jitter.
     """
 
@@ -1112,8 +1207,6 @@ class ClimbingEnv(gymnasium.Env):
         self._step_count = 0
         self._cumulative_reward = 0.0
         self._footholds_established = 0
-        self._foot_proximity_disabled = False
-        self._ground_reanchor_disabled = False
         self._prev_target_dist: float | None = None
         self._last_reward_breakdown: dict[str, float] = {}
 
@@ -1124,7 +1217,7 @@ class ClimbingEnv(gymnasium.Env):
         self._obs_roles: np.ndarray | None = None            # (MAX,) normalised
         self._hold_sequence: list[dict] = []
         self._seq_idx = 0
-        self._anchor_hold_idx: dict[str, int] = {}  # limb -> hold idx (-1=ground)
+        self._anchor_hold_idx: dict[str, int] = {}  # limb -> hold idx
 
     # Observation
 
@@ -1207,12 +1300,10 @@ class ClimbingEnv(gymnasium.Env):
         """Run one environment step.
 
         Args:
-            action: Dict with ``joint_deltas`` (8,) and
-                ``grab_release`` (4,) arrays.  Grip values are
+            action: Dict with joint_deltas (8,) and
+                grab_release (4,) arrays.  Grip values are
                 absolute: 1=engage (grab if near hold), 0=disengage
                 (release if anchored).
-                Feet can re-anchor to the ground (at ``RL_GROUND_Y``)
-                until any wall hold is grabbed.
 
         Returns:
             (obs, reward, terminated, truncated, info)
@@ -1226,7 +1317,7 @@ class ClimbingEnv(gymnasium.Env):
 
         rg = self._ragdoll
         space = self._space
-        
+
         reward_from_grab = 0.0
 
         # 1. Apply motor targets
@@ -1257,15 +1348,6 @@ class ClimbingEnv(gymnasium.Env):
                     if create_hold_joint(rg, space, limb, tuple(pos)):
                         self._anchor_hold_idx[limb] = hold_idx
                         reward_from_grab += self._on_grab(limb, hold_idx)
-                elif "foot" in limb and not self._ground_reanchor_disabled:
-                    # Re-anchor to ground if foot is near ground level
-                    ee = _get_end_effector_positions_bu(rg)
-                    foot_idx = _LIMB_NAMES.index(limb)
-                    foot_y = ee[foot_idx][1]
-                    if abs(foot_y - config.RL_GROUND_Y) < config.RL_GRAB_THRESHOLD:
-                        ground_pos = (float(ee[foot_idx][0]), config.RL_GROUND_Y)
-                        if create_hold_joint(rg, space, limb, ground_pos):
-                            self._anchor_hold_idx[limb] = -1
             elif not wants_grip and is_gripping:
                 # Release
                 destroy_hold_joint(rg, space, limb)
@@ -1291,6 +1373,7 @@ class ClimbingEnv(gymnasium.Env):
                 self._anchor_hold_idx.pop(limb, None)
 
         self._step_count += 1
+        self._steps_since_arrival += 1
 
         # 5. Compute reward
         reward = self._compute_reward() + reward_from_grab
@@ -1303,6 +1386,12 @@ class ClimbingEnv(gymnasium.Env):
             reward += config.RL_CONTACT_PENALTY_TERMINAL
             self._cumulative_reward += config.RL_CONTACT_PENALTY_TERMINAL
             self._last_reward_breakdown["fall_penalty"] = config.RL_CONTACT_PENALTY_TERMINAL
+        elif truncated and outcome == "timeout":
+            reward += config.RL_CONTACT_PENALTY_TIMEOUT
+            self._cumulative_reward += config.RL_CONTACT_PENALTY_TIMEOUT
+            self._last_reward_breakdown["timeout_penalty"] = config.RL_CONTACT_PENALTY_TIMEOUT
+
+        self._last_reward_breakdown["cumulative"] = self._cumulative_reward
 
         obs = self._build_obs()
         info = self._build_info(outcome)
@@ -1322,10 +1411,10 @@ class ClimbingEnv(gymnasium.Env):
         Args:
             seed: Optional RNG seed.
             options: Optional dict.
-                ``route_index`` selects a specific
+                route_index selects a specific
                 route (for deterministic testing).
-                ``hold_jitter`` overrides the jitter magnitude
-                (default ``RL_HOLD_JITTER``; pass ``0.0`` for eval).
+                hold_jitter overrides the jitter magnitude
+                (default RL_HOLD_JITTER; pass 0.0 for eval).
 
         Returns:
             (obs, info)
@@ -1398,26 +1487,14 @@ class ClimbingEnv(gymnasium.Env):
                 "left_hand": tuple(sorted_starts[0]),
                 "right_hand": tuple(sorted_starts[-1]),
             }
-            
-        # Ground foot positions: only if legs can reach the ground
-        hand_positions = np.array(list(hand_holds.values()))
-        mid_x = float(hand_positions[:, 0].mean())
-        hsw = self._bone_lengths["half_shoulder_width"]
-        leg_reach = self._bone_lengths["thigh"] + self._bone_lengths["shin"]
-        hand_y_mean = float(hand_positions[:, 1].mean())
-        hip_drop = (self._bone_lengths["torso"]
-                    + 0.7 * (self._bone_lengths["upper_arm"]
-                             + self._bone_lengths["forearm"]))
-        hip_y_approx = hand_y_mean - hip_drop
-        ground_distance = hip_y_approx - config.RL_GROUND_Y
 
-        if ground_distance <= leg_reach:
-            foot_positions = {
-                "left_foot": (mid_x - hsw, config.RL_GROUND_Y),
-                "right_foot": (mid_x + hsw, config.RL_GROUND_Y),
-            }
-        else:
-            foot_positions = None
+        # Foot holds from annotation
+        foot_holds = {}
+        if route.start_feet is not None:
+            for side_key, hold_name in route.start_feet.items():
+                limb = "left_foot" if side_key == "L" else "right_foot"
+                if hold_name in name_to_jittered:
+                    foot_holds[limb] = tuple(name_to_jittered[hold_name])
 
         # Create physics world + ragdoll
         self._space = create_space()
@@ -1425,13 +1502,19 @@ class ClimbingEnv(gymnasium.Env):
             self._space, self._bone_lengths,
         )
         reset_pose(
-            self._ragdoll, self._space, hand_holds, foot_positions,
+            self._ragdoll, self._space, hand_holds,
+            foot_holds if foot_holds else None,
         )
 
-        # Settle physics
+        # Settle physics with motors braking to preserve IK pose
+        for jname in _JOINT_NAMES:
+            set_motor_rate(self._ragdoll, jname, 0.0)
         dt = 1.0 / config.RL_PHYSICS_HZ
         for _ in range(config.RL_SETTLE_STEPS):
             self._space.step(dt)
+        # Release brakes so the agent starts with passive joints
+        for jname in _JOINT_NAMES:
+            self._ragdoll.joints[jname][2].max_force = 0.0
 
         # Track anchor state
         self._anchor_hold_idx = {}
@@ -1439,17 +1522,17 @@ class ClimbingEnv(gymnasium.Env):
             idx = self._nearest_hold_index(np.array(hold_pos_bu))
             if idx is not None:
                 self._anchor_hold_idx[limb] = idx
-        if foot_positions:
-            for limb in foot_positions:
-                self._anchor_hold_idx[limb] = -1  # ground sentinel
+        for limb, hold_pos_bu in foot_holds.items():
+            idx = self._nearest_hold_index(np.array(hold_pos_bu))
+            if idx is not None:
+                self._anchor_hold_idx[limb] = idx
 
         # Episode bookkeeping
         self._seq_idx = 0
         self._step_count = 0
+        self._steps_since_arrival = 0
         self._cumulative_reward = 0.0
         self._footholds_established = 0
-        self._foot_proximity_disabled = False
-        self._ground_reanchor_disabled = foot_positions is None
         self._prev_target_dist = self._target_distance()
 
         return self._build_obs(), self._build_info("running")
@@ -1482,20 +1565,12 @@ class ClimbingEnv(gymnasium.Env):
     def _on_grab(self, limb: str, hold_idx: int) -> float:
         """Bookkeeping after a successful grab.
 
-        Sets ``_ground_reanchor_disabled`` on any wall hold grab
-        (hand or foot), permanently disabling ground re-anchoring.
-        Sets ``_foot_proximity_disabled`` on wall foothold grab,
-        permanently disabling the foot proximity bonus.
-
         Returns:
             Bonus reward earned (arrival or finish), 0.0 otherwise.
         """
         bonus = 0.0
-        if hold_idx >= 0:
-            self._ground_reanchor_disabled = True
         if "foot" in limb and hold_idx >= 0:
             self._footholds_established += 1
-            self._foot_proximity_disabled = True
 
         if self._seq_idx < len(self._hold_sequence):
             target = self._current_target()
@@ -1505,6 +1580,7 @@ class ClimbingEnv(gymnasium.Env):
                 hold_pos = self._hold_positions_bu[hold_idx]
                 if np.linalg.norm(hold_pos - target_pos) < config.RL_GRAB_THRESHOLD:
                     self._seq_idx += 1
+                    self._steps_since_arrival = 0
                     self._prev_target_dist = self._target_distance()
                     bonus = config.RL_REWARD_ARRIVAL_BONUS
                     if self._sequence_complete():
@@ -1526,9 +1602,7 @@ class ClimbingEnv(gymnasium.Env):
     def _compute_reward(self) -> float:
         """Compute shaped reward for the current step.
 
-        Foot proximity bonus is latched off permanently once any foot
-        grabs a wall hold (via ``_foot_proximity_disabled``).
-        Stores component breakdown in ``_last_reward_breakdown`` for
+        Stores component breakdown in _last_reward_breakdown for
         debug visualization.
         """
         bd: dict[str, float] = {}
@@ -1540,30 +1614,10 @@ class ClimbingEnv(gymnasium.Env):
         if not self._sequence_complete():
             curr_dist = self._target_distance()
             if self._prev_target_dist is not None:
-                hand_prox = self._prev_target_dist - curr_dist
+                hand_prox = (self._prev_target_dist - curr_dist) * config.RL_HAND_PROXIMITY_SCALE
             self._prev_target_dist = curr_dist
         reward += hand_prox
         bd["hand_prox"] = hand_prox
-
-        # Foot proximity: active only when BOTH feet off wall holds
-        foot_prox = 0.0
-        if config.RL_FOOT_PROXIMITY_ENABLED and not self._foot_proximity_disabled:
-            feet_on_wall = sum(
-                1 for limb in ("left_foot", "right_foot")
-                if self._anchor_hold_idx.get(limb, -1) >= 0
-            )
-            if feet_on_wall == 0:
-                ee = _get_end_effector_positions_bu(self._ragdoll)
-                for foot_idx in (2, 3):
-                    foot_pos = ee[foot_idx]
-                    if len(self._hold_positions_bu) > 0:
-                        dists = np.linalg.norm(
-                            self._hold_positions_bu - foot_pos, axis=1,
-                        )
-                        min_dist = float(dists.min())
-                        foot_prox += config.RL_REWARD_FOOT_PROXIMITY / max(min_dist, 1.0)
-        reward += foot_prox
-        bd["foot_prox"] = foot_prox
 
         # Contact / stability
         contact = self._contact_stability_reward()
@@ -1571,10 +1625,17 @@ class ClimbingEnv(gymnasium.Env):
         bd["contact"] = contact
 
         self._last_reward_breakdown = bd
+        bd["steps_remaining"] = config.RL_STEPS_PER_TARGET - self._steps_since_arrival
         return reward
 
     def _contact_stability_reward(self) -> float:
-        """Tiered contact reward based on anchor configuration."""
+        """Tiered contact reward based on anchor configuration.
+
+        For 4-contact configurations, validates that the support
+        quadrilateral (LH → RH → RF → LF) is non-self-intersecting.
+        Self-intersecting polygons (e.g. foot above both hands) are
+        treated as having no useful foot contacts.
+        """
         hand_contacts = sum(
             1 for limb in ("left_hand", "right_hand")
             if limb in self._anchor_hold_idx
@@ -1596,21 +1657,20 @@ class ClimbingEnv(gymnasium.Env):
         m2bu = 1.0 / config.RL_BOARD_UNIT_TO_METERS
         cog = _compute_cog_meters(self._ragdoll) * m2bu
 
-        anchored_pos = []
+        anchored_pos = {}
         for limb in _LIMB_NAMES:
             idx = self._anchor_hold_idx.get(limb)
             if idx is not None and idx >= 0:
-                anchored_pos.append(self._hold_positions_bu[idx])
-            elif idx == -1:
-                # ground position, use end-effector position
-                ee_idx = _LIMB_NAMES.index(limb)
-                ee = _get_end_effector_positions_bu(self._ragdoll)
-                anchored_pos.append(ee[ee_idx])
-        anchored = np.array(anchored_pos)
+                anchored_pos[limb] = self._hold_positions_bu[idx]
 
-        if len(anchored) < 2:
+        if len(anchored_pos) < 2:
             return 0.0
 
+        # Reject nonsensical 4-contact configurations (e.g. foot above hands)
+        if len(anchored_pos) == 4 and not _is_valid_support_quad(anchored_pos):
+            return config.RL_CONTACT_PENALTY_2HANDS
+
+        anchored = np.array(list(anchored_pos.values()))
         dist = _cog_support_distance(cog, anchored)
         if dist <= 0.0:
             return config.RL_CONTACT_REWARD_COG_INSIDE
@@ -1621,9 +1681,13 @@ class ClimbingEnv(gymnasium.Env):
     def _check_termination(self) -> tuple[bool, bool, str]:
         """Check episode end conditions.
 
+        Uses a per-target step budget: the agent gets
+        ``RL_STEPS_PER_TARGET`` steps to reach each successive
+        target hand hold.  The counter resets on every arrival.
+
         Returns:
             (terminated, truncated, outcome) where outcome is one of
-            ``"running"``, ``"success"``, ``"fall"``, ``"timeout"``.
+            "running", "success", "fall", "timeout".
         """
         hand_contacts = sum(
             1 for limb in ("left_hand", "right_hand")
@@ -1644,7 +1708,7 @@ class ClimbingEnv(gymnasium.Env):
             if hands_on_finish:
                 return True, False, "success"
 
-        if self._step_count >= config.RL_STEP_LIMIT:
+        if self._steps_since_arrival >= config.RL_STEPS_PER_TARGET:
             return False, True, "timeout"
 
         return False, False, "running"
@@ -1668,10 +1732,9 @@ class ClimbingEnv(gymnasium.Env):
     # Keypoint extraction (for evaluation)
 
     def extract_episode_keypoints(self) -> np.ndarray:
-        """Current-frame keypoints for recording, shape ``(12, 2)``."""
+        """Current-frame keypoints for recording, shape (12, 2)."""
         return extract_keypoints(self._ragdoll)
-    
-    
+
 def rollout_episode(
     env: ClimbingEnv,
     action_fn: callable,
@@ -1682,13 +1745,13 @@ def rollout_episode(
 
     Args:
         env: ClimbingEnv instance.
-        action_fn: ``(env, step) -> action dict``. Called each step.
+        action_fn: (env, step) -> action dict. Called each step.
         route_index: Which route to reset with.
 
     Returns:
-        Dict with keys ``poses``, ``head_positions``, ``targets``,
-        ``cog_positions``, ``support_polygons``, ``rewards``,
-        ``outcome``, ``info``.  Each list has one entry per step
+        Dict with keys poses, head_positions, targets,
+        cog_positions, support_polygons, rewards,
+        outcome, info.  Each list has one entry per step
         (including the initial reset frame).
     """
     obs, info = env.reset(options={"route_index": route_index, "hold_jitter": 0.0})
@@ -1696,6 +1759,7 @@ def rollout_episode(
 
     poses, head_positions, targets = [], [], []
     cog_positions, support_polygons = [], []
+    target_hands = []
     rewards = []
     reward_breakdowns = []
 
@@ -1704,20 +1768,21 @@ def rollout_episode(
         head_positions.append(extract_head_position(env._ragdoll))
         t = env._current_target()
         targets.append((t["x"], t["y"]))
+        target_hands.append(t["hand"])  # "L" or "R"
         cog_positions.append(_compute_cog_meters(env._ragdoll) * m2bu)
 
-        anchored = []
+        anchored_map = {}
         for limb in _LIMB_NAMES:
             idx = env._anchor_hold_idx.get(limb)
             if idx is not None and idx >= 0:
-                anchored.append(env._hold_positions_bu[idx])
-            elif idx == -1:
-                ee_idx = _LIMB_NAMES.index(limb)
-                ee = _get_end_effector_positions_bu(env._ragdoll)
-                anchored.append(ee[ee_idx])
-        support_polygons.append(
-            np.array(anchored) if anchored else np.empty((0, 2)),
-        )
+                anchored_map[limb] = env._hold_positions_bu[idx]
+        if len(anchored_map) == 4 and not _is_valid_support_quad(anchored_map):
+            support_polygons.append(np.empty((0, 2)))
+        else:
+            anchored = list(anchored_map.values())
+            support_polygons.append(
+                np.array(anchored) if anchored else np.empty((0, 2)),
+            )
 
     snapshot()
     outcome = "running"
@@ -1738,6 +1803,7 @@ def rollout_episode(
         "poses": poses,
         "head_positions": head_positions,
         "targets": targets,
+        "target_hands": target_hands,
         "cog_positions": cog_positions,
         "support_polygons": support_polygons,
         "rewards": rewards,

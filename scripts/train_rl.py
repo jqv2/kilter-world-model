@@ -8,6 +8,8 @@ Usage::
 
     python -m scripts.train_rl --dataset data/dataset.npz
     python -m scripts.train_rl --total-frames 500000 --device cuda
+    # Per-route overfitting with isolated outputs:
+    python -m scripts.train_rl --train-routes routes/easy1.txt --run-name easy1
 """
 
 from __future__ import annotations
@@ -117,9 +119,9 @@ def _render_eval_videos(
             head_positions=data["head_positions"],
             head_radius_bu=config.RL_HEAD_RADIUS / config.RL_BOARD_UNIT_TO_METERS,
             target_positions=data["targets"],
+            target_hands=data.get("target_hands"),
             cog_positions=data["cog_positions"],
             support_polygons=data["support_polygons"],
-            board_y_min=int(config.RL_GROUND_Y - 5),
             interpolate=(config.RL_PHYSICS_HZ, config.RL_CONTROL_HZ),
             fps=float(config.RL_PHYSICS_HZ),
             title=f"{frame_label} | {data['outcome']}",
@@ -270,7 +272,6 @@ class MilestoneTracker:
 
     def __init__(self, ckpt_dir: Path):
         self._dir = ckpt_dir
-        self._first_foothold = False
         self._holds_reached: set[int] = set()
         self._completed = False
         self._best_return = -float("inf")
@@ -288,26 +289,22 @@ class MilestoneTracker:
         stem = info.get("route_stem", "unknown")
 
         # Global milestones across all climbs
-        if fh > 0 and not self._first_foothold:
-            self._first_foothold = True
-            save_fn("first_foothold")
-
         for h in range(1, hv + 1):
             if h not in self._holds_reached:
                 self._holds_reached.add(h)
-                save_fn(f"hold_{h}")
+                save_fn(f"hold_{h}_GLOBAL")
 
         if outcome == "success" and not self._completed:
             self._completed = True
-            save_fn("first_completion")
+            save_fn("first_completion_GLOBAL")
 
         if ret > self._best_return + config.RL_BEST_RETURN_THRESHOLD:
             self._best_return = ret
-            save_fn(f"best_return_r{ret:+.0f}")
+            save_fn(f"best_return_r{ret:+.0f}_GLOBAL")
 
         if hvr > self._best_hvr:
             self._best_hvr = hvr
-            save_fn(f"best_hvr_{hvr:.2f}")
+            save_fn(f"best_hvr_{hvr:.2f}_GLOBAL")
 
         # Per-route: new max holds visited
         prev_best = self._best_holds_per_route.get(stem, 0)
@@ -318,7 +315,6 @@ class MilestoneTracker:
     def state_dict(self) -> dict:
         """Serializable milestone state for checkpointing."""
         return {
-            "first_foothold": self._first_foothold,
             "holds_reached": sorted(self._holds_reached),
             "completed": self._completed,
             "best_return": self._best_return,
@@ -328,7 +324,6 @@ class MilestoneTracker:
 
     def load_state_dict(self, state: dict) -> None:
         """Restore milestone state from checkpoint."""
-        self._first_foothold = state["first_foothold"]
         self._holds_reached = set(state["holds_reached"])
         self._completed = state["completed"]
         self._best_return = state["best_return"]
@@ -455,11 +450,25 @@ def train(args):
     
     env = ClimbingEnv(routes, bone_lengths, seed=args.seed)
     
+    # Output directories (namespaced by --run-name for parallel runs)
+    suffix = f"/{args.run_name}" if args.run_name else ""
+    ckpt_dir = Path(str(config.RL_CHECKPOINT_DIR) + suffix)
+    log_dir = Path(str(config.RL_LOG_DIR) + suffix)
+    viz_dir = Path(str(config.RL_VIZ_DIR) + suffix)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    
     # Reference routes for periodic eval videos
     reference_routes = _resolve_reference_routes(args.ref_routes, routes)
     print(f"Eval video routes: {[routes[i].stem for i in reference_routes]}")
-    viz_dir = config.RL_VIZ_DIR
-    viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Training route subset (curriculum)
+    if args.train_routes:
+        train_indices = _resolve_reference_routes(args.train_routes, routes)
+        print(f"Training route subset: {[routes[i].stem for i in train_indices]}")
+    else:
+        train_indices = None
 
     obs_dim = env.observation_space.shape[0]
     policy = PolicyNetwork(obs_dim).to(device)
@@ -472,8 +481,6 @@ def train(args):
     # Resume from checkpoint if provided
     total_frames = 0
     episode_count = 0
-    ckpt_dir = config.RL_CHECKPOINT_DIR
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
     milestones = MilestoneTracker(ckpt_dir)
     if args.resume:
         total_frames, episode_count = load_checkpoint(
@@ -482,8 +489,6 @@ def train(args):
         print(f"Resumed from {args.resume} at frame {total_frames}")
 
     # Logging
-    log_dir = config.RL_LOG_DIR
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "train_log.csv"
     log_fields = [
         "total_frames", "episodes", "episode_return", "episode_length",
@@ -496,13 +501,16 @@ def train(args):
         log_writer.writeheader()
     
     # Tensorboard
-    tb_writer = SummaryWriter(log_dir=config.DATA_DIR / "tb_logs")
+    tb_dir = Path(str(config.DATA_DIR / "tb_logs") + suffix)
+    tb_writer = SummaryWriter(log_dir=tb_dir)
 
     t_start = time.time()
     next_ckpt = total_frames + config.RL_CHECKPOINT_INTERVAL
 
     # Collect + train
-    obs, info = env.reset()
+    obs, info = env.reset(options={
+                    "route_index": int(np.random.choice(train_indices)),
+                } if train_indices else None)
     ep_return, ep_length = 0.0, 0
 
     while total_frames < args.total_frames:
@@ -556,7 +564,10 @@ def train(args):
                         policy, value_net, optimizer, total_frames, episode_count,
                         milestones,
                     )
-                    print(f"  Milestone: {tag} (route: {stem})")
+                    if tag.endswith("_GLOBAL"):
+                        print(f"  GLOBAL milestone: {tag[:-7]} (route: {stem})")
+                    else:
+                        print(f"  Route milestone: {tag} (route: {stem})")
 
                 milestones.check(info, total_frames, _save_milestone)
 
@@ -577,7 +588,9 @@ def train(args):
                     )
                     print(f"  Eval videos saved for episode {episode_count}")
 
-                obs, info = env.reset()
+                obs, info = env.reset(options={
+                    "route_index": int(np.random.choice(train_indices)),
+                } if train_indices else None)
                 ep_return, ep_length = 0.0, 0
             else:
                 obs = next_obs
@@ -671,6 +684,16 @@ def main():
     parser.add_argument(
         "--ref-routes", default=str(config.DATA_DIR / "rl_reference_routes.txt"),
         help="Text file with one climb name per line for eval videos",
+    )
+    parser.add_argument(
+        "--train-routes", default=None,
+        help="Text file with climb names to train on (subset curriculum). "
+            "If omitted, trains on all routes.",
+    )
+    parser.add_argument(
+        "--run-name", default=None,
+        help="Run name for output namespacing (checkpoints, logs, viz). "
+            "If omitted, uses shared default dirs.",
     )
     args = parser.parse_args()
     train(args)

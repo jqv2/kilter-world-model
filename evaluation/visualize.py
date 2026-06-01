@@ -358,21 +358,32 @@ def draw_target_hold(
     target_board_xy: tuple[float, float],
     scale: int = RENDER_SCALE,
     pad: int = RENDER_PAD,
+    hand: str | None = None,
 ) -> None:
-    """
-    Draw target hold marker on a board image (in-place).
+    """Draw target hold marker on a board image (in-place).
 
     Args:
         img: Board image (BGR).
         target_board_xy: (x, y) target hold in board coordinates.
         scale: Pixels per board unit.
         pad: Padding in board units.
+        hand: ``"L"`` or ``"R"`` to color by hand. When None,
+            uses the default orange-yellow.
     """
+    COLOR_LEFT_HAND = (255, 150, 0)    # blue-ish (BGR)
+    COLOR_RIGHT_HAND = (0, 100, 255)   # red-ish (BGR)
+    COLOR_DEFAULT = (0, 200, 255)      # orange-yellow
+
+    if hand == "L":
+        color = COLOR_LEFT_HAND
+    elif hand == "R":
+        color = COLOR_RIGHT_HAND
+    else:
+        color = COLOR_DEFAULT
+
     tgt_px = board_to_pixel(target_board_xy[0], target_board_xy[1], scale, pad)
-    # Bright ring
-    cv2.circle(img, tgt_px, max(6, scale), (0, 200, 255), 3)
-    # Inner dot
-    cv2.circle(img, tgt_px, max(2, scale // 2), (0, 200, 255), -1)
+    cv2.circle(img, tgt_px, max(6, scale), color, 3)
+    cv2.circle(img, tgt_px, max(2, scale // 2), color, -1)
 
 
 def render_pose_video_with_targets(
@@ -452,6 +463,7 @@ def draw_rl_frame(
     head_pos: np.ndarray | None = None,
     head_radius_bu: float | None = None,
     target_pos: tuple[float, float] | None = None,
+    target_hand: str | None = None,
     cog_bu: np.ndarray | None = None,
     support_bu: np.ndarray | None = None,
     segment_cogs_bu: np.ndarray | None = None,
@@ -472,6 +484,8 @@ def draw_rl_frame(
             a cosmetic default is used.  To get the physical radius,
             pass ``RL_HEAD_RADIUS / RL_BOARD_UNIT_TO_METERS``.
         target_pos: (x, y) target hold in board units.
+        target_hand: ``"L"`` or ``"R"`` indicating which hand should
+            grab the target.  Controls the marker color.
         cog_bu: (2,) overall centre of gravity in board units.
         support_bu: (N, 2) support polygon vertices in board units.
             Drawn as a line for 2 contacts, shaded polygon for 3+.
@@ -527,7 +541,7 @@ def draw_rl_frame(
 
     # 6. Target hold marker
     if target_pos is not None:
-        draw_target_hold(img, target_pos, scale, pad)
+        draw_target_hold(img, target_pos, scale, pad, hand=target_hand)
 
 
 def _interpolate_rl_data(poses, heads, targets, cogs, supports,
@@ -582,6 +596,7 @@ def render_rl_video(
     head_positions: list[np.ndarray] | None = None,
     head_radius_bu: float | None = None,
     target_positions: list[tuple[float, float]] | None = None,
+    target_hands: list[str] | None = None,
     cog_positions: list[np.ndarray] | None = None,
     support_polygons: list[np.ndarray] | None = None,
     segment_cog_positions: list[np.ndarray] | None = None,
@@ -656,6 +671,12 @@ def render_rl_video(
                 for bd in reward_breakdowns:
                     interp_bd.extend([bd] * substeps)
                 reward_breakdowns = interp_bd
+            if target_hands:
+                snapped = []
+                for th in target_hands[:-1]:
+                    snapped.extend([th] * substeps)
+                snapped.append(target_hands[-1])
+                target_hands = snapped
 
         for i, pose in enumerate(poses):
             frame = board_img.copy()
@@ -669,6 +690,9 @@ def render_rl_video(
                 target_pos=(target_positions[i]
                             if target_positions and i < len(target_positions)
                             else None),
+                target_hand=(target_hands[i]
+                             if target_hands and i < len(target_hands)
+                             else None),
                 cog_bu=(cog_positions[i]
                         if cog_positions and i < len(cog_positions)
                         else None),
@@ -695,17 +719,17 @@ def render_rl_video(
                 bd_idx = i - 1 if not interpolate else i - (interpolate[0] // interpolate[1])
                 if 0 <= bd_idx < len(reward_breakdowns):
                     bd = reward_breakdowns[bd_idx]
-                    cumulative_reward = sum(
-                        r.get("step", 0) + r.get("hand_prox", 0)
-                        + r.get("foot_prox", 0) + r.get("contact", 0)
-                        + r.get("grab_bonus", 0)
-                        + r.get("fall_penalty", 0)
-                        for r in reward_breakdowns[:bd_idx + 1]
-                    )
+                    cumulative_reward = bd.get("cumulative", 0.0)
+                    step_r = (bd.get("step", 0) + bd.get("hand_prox", 0)
+                              + bd.get("foot_prox", 0) + bd.get("contact", 0)
+                              + bd.get("grab_bonus", 0) + bd.get("fall_penalty", 0)
+                              + bd.get("timeout_penalty", 0))
+                    remaining = int(bd.get("steps_remaining", 0))
                     lines = [
-                        f"Total: {sum(bd.values()):+.3f}  Cumulative: {cumulative_reward:+.1f}",
+                        f"Total: {step_r:+.3f}  Cumulative: {cumulative_reward:+.1f}",
                         f"hand:{bd.get('hand_prox',0):+.3f}  foot:{bd.get('foot_prox',0):+.3f}",
-                        f"contact:{bd.get('contact',0):+.3f}  step:{bd.get('step',0):.3f}",
+                        f"stability:{bd.get('contact',0):+.3f}  step:{bd.get('step',0):.3f}",
+                        f"Target budget: {remaining}/{config.RL_STEPS_PER_TARGET}",
                     ]
                     grab = bd.get("grab_bonus", 0)
                     fall = bd.get("fall_penalty", 0)

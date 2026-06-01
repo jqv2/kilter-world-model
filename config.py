@@ -185,48 +185,48 @@ RL_GRAVITY = 9.81                     # m/s^2
 RL_PHYSICS_HZ = 60                    # physics simulation rate (timestep = 1/60 s)
 RL_CONTROL_HZ = 10                    # agent decisions per second of sim time
 RL_BODY_MASS_KG = 77.0                # total ragdoll mass
-RL_SPACE_DAMPING = 0.95               # global velocity damping (1.0 = none)
-RL_BONE_LENGTH_PERCENTILE = 95.0      # percentile for bone length estimation
+RL_SPACE_DAMPING = 0.93              # global velocity damping (1.0 = none)
+RL_BONE_LENGTH_PERCENTILE = 97.0      # percentile for bone length estimation
 RL_HEAD_RADIUS = 0.10                 # meters
 
-RL_MOTOR_TORQUE_HIP = 600.0           # Nm (3x human, compensates for 2D)
-RL_MOTOR_TORQUE_KNEE = 525.0
-RL_MOTOR_TORQUE_SHOULDER = 200.0      # Nm (2x human, encourages using feet instead)
-RL_MOTOR_TORQUE_ELBOW = 160.0
-RL_MAX_MOTOR_SPEED = 5.0              # rad/s, joint motor speed cap
+RL_MOTOR_TORQUE_HIP = 200.0 * 2     # Nm (2x human, compensates for 2D)
+RL_MOTOR_TORQUE_KNEE = 175.0 * 2
+RL_MOTOR_TORQUE_SHOULDER = 100.0 * 2
+RL_MOTOR_TORQUE_ELBOW = 80.0 * 2
+RL_MAX_MOTOR_SPEED = 4.0              # rad/s, joint motor speed cap
 
-RL_GRIP_MAX_FORCE = 15000.0            # Newtons, per hold joint
-RL_GRAB_THRESHOLD = 5.0               # board units, max distance to grab a hold
+RL_GRIP_MAX_FORCE = 50000.0            # Newtons, per hold joint
+RL_GRAB_THRESHOLD = 6.0               # board units, max distance to grab a hold
 
 # RL Baseline — Environment
-RL_STEP_LIMIT = 400
+RL_STEP_LIMIT = 350
+RL_STEPS_PER_TARGET = 60             # steps allowed per target hand hold
 RL_HOLD_JITTER = 0.5               # board units, ±random offset per hold per reset
-RL_GROUND_Y = -15.0                # board units, ground level below board origin
 RL_SETTLE_STEPS = 30               # Pymunk substeps during reset to find equilibrium
 RL_MOTOR_GAIN = 10.0               # proportional gain for motor target chasing
 
 # RL Baseline — Rewards
 RL_REWARD_STEP_PENALTY = -0.01
-RL_REWARD_ARRIVAL_BONUS = 25.0
-RL_REWARD_FINISH_BONUS = 50.0
-RL_REWARD_FOOT_PROXIMITY = 0.05
-RL_FOOT_PROXIMITY_ENABLED = True
-RL_CONTACT_REWARD_COG_INSIDE = 0.0
-RL_CONTACT_COG_DISTANCE_SCALE = -0.02
-RL_CONTACT_PENALTY_2HANDS = -0.2
-RL_CONTACT_PENALTY_1HAND = -0.5
-RL_CONTACT_PENALTY_TERMINAL = -100.0
+RL_REWARD_ARRIVAL_BONUS = 50.0
+RL_REWARD_FINISH_BONUS = 100.0
+RL_HAND_PROXIMITY_SCALE = 2.0
+RL_CONTACT_REWARD_COG_INSIDE = 0.1
+RL_CONTACT_COG_DISTANCE_SCALE = -0.05
+RL_CONTACT_PENALTY_2HANDS = -0.5
+RL_CONTACT_PENALTY_1HAND = -1.0
+RL_CONTACT_PENALTY_TERMINAL = -20
+RL_CONTACT_PENALTY_TIMEOUT = 0
 RL_BEST_RETURN_THRESHOLD = 2.0        # minimum improvement to trigger best_return milestone
 
 # RL Baseline — PPO Training
-RL_PPO_LR = 3e-4
-RL_PPO_BATCH_SIZE = 8192           # frames collected per PPO update
-RL_PPO_MINIBATCH_SIZE = 256
-RL_PPO_EPOCHS = 10                 # SGD passes per PPO update
+RL_PPO_LR = 1e-4
+RL_PPO_BATCH_SIZE = 4096           # frames collected per PPO update
+RL_PPO_MINIBATCH_SIZE = 128
+RL_PPO_EPOCHS = 5                 # SGD passes per PPO update
 RL_PPO_CLIP_EPSILON = 0.2
-RL_PPO_GAMMA = 0.99
+RL_PPO_GAMMA = 0.993
 RL_PPO_GAE_LAMBDA = 0.95
-RL_PPO_ENTROPY_COEF = 0.01
+RL_PPO_ENTROPY_COEF = 0.0075
 RL_PPO_MAX_GRAD_NORM = 0.5
 RL_HIDDEN_DIM = 128
 RL_HIDDEN_LAYERS = 2
