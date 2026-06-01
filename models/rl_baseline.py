@@ -35,6 +35,7 @@ import gymnasium
 from gymnasium import spaces
 from models.world_model import resolve_hold_sequence_and_targets
 from pipeline.routes import load_hold_order_edit, BOARD_X_MIN, BOARD_X_MAX, BOARD_Y_MIN, BOARD_Y_MAX
+from evaluation.baselines import compute_rl_bone_lengths, BONE_PAIRS_COCO as _BONE_PAIRS_COCO, WIDTH_PAIRS_COCO as _WIDTH_PAIRS_COCO
 
 import config
 
@@ -194,58 +195,6 @@ _ROLE_MAP = {
 _ROLE_START = 12
 _ROLE_FINISH = 14
 _ROLE_FOOT_ONLY = 15
-
-################################################
-# Bone-length computation from training data
-################################################
-
-# COCO 17-keypoint index pairs: [(left_pair), (right_pair)]
-_BONE_PAIRS_COCO: dict[str, list[tuple[int, int]]] = {
-    "upper_arm": [(5, 7), (6, 8)],
-    "forearm": [(7, 9), (8, 10)],
-    "thigh": [(11, 13), (12, 14)],
-    "shin": [(13, 15), (14, 16)],
-    "torso": [(5, 11), (6, 12)],
-}
-_WIDTH_PAIRS_COCO: dict[str, tuple[int, int]] = {
-    "half_shoulder_width": (5, 6),
-    "half_hip_width": (11, 12),
-}
-
-def compute_rl_bone_lengths(
-    sequences: list[np.ndarray],
-    percentile: float = config.RL_BONE_LENGTH_PERCENTILE,
-) -> dict[str, float]:
-    """Compute representative bone lengths from training pose sequences.
-
-    For each bone, computes the Euclidean distance per frame across all
-    sequences, averages left and right sides, and takes the given
-    percentile.  Returns 5 bone lengths and 2 half-widths, all in
-    board units.
-
-    Args:
-        sequences: List of (T_i, 17, 2) arrays in board space
-            (full COCO keypoints).
-        percentile: Percentile to use (e.g. 95 for 95th-percentile).
-
-    Returns:
-        Dict with keys upper_arm, forearm, thigh, shin,
-        torso, half_shoulder_width, half_hip_width.
-    """
-    result: dict[str, float] = {}
-
-    for name, pairs in _BONE_PAIRS_COCO.items():
-        all_lengths: list[np.ndarray] = []
-        for seq in sequences:
-            for i, j in pairs:
-                all_lengths.append(np.linalg.norm(seq[:, i] - seq[:, j], axis=1))
-        result[name] = float(np.percentile(np.concatenate(all_lengths), percentile))
-
-    for name, (i, j) in _WIDTH_PAIRS_COCO.items():
-        all_widths = [np.linalg.norm(seq[:, i] - seq[:, j], axis=1) for seq in sequences]
-        result[name] = float(np.percentile(np.concatenate(all_widths), percentile)) / 2.0
-
-    return result
 
 ################################################
 # Ragdoll dataclass

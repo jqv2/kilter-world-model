@@ -9,13 +9,13 @@ Usage:
     python scripts/run_eval.py
 
     # Add greedy IK baseline
-    python scripts/run_eval.py --greedy
+    python scripts/run_eval.py --hanging
 
     # Add one or more model checkpoints
-    python scripts/run_eval.py --greedy --checkpoints data/checkpoints/best_structured.pt data/checkpoints/best_unstructured.pt
+    python scripts/run_eval.py --hanging --checkpoints data/checkpoints/best_structured.pt data/checkpoints/best_unstructured.pt
 
     # Save results to JSON
-    python scripts/run_eval.py --greedy --checkpoints data/checkpoints/best.pt --output eval_results.json
+    python scripts/run_eval.py --hanging --checkpoints data/checkpoints/best.pt --output eval_results.json
 """
 
 import argparse
@@ -36,7 +36,8 @@ from evaluation.metrics import (
 )
 from pipeline.dataset import load_dataset
 from pipeline.routes import pad_holds, normalize_board_coords
-from evaluation.baselines import greedy_ik_baseline_predictions
+from functools import partial
+from evaluation.baselines import hanging_baseline_predictions, compute_rl_bone_lengths
 from models.world_model import (
     PoseTransformer, StructuredPoseTransformer,
     compute_reference_bone_lengths, enforce_bone_lengths,
@@ -62,8 +63,8 @@ def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds=None):
 
     Args:
         name: Display name for this method.
-        predict_fn: Callable(gt_frames, route_holds?) -> list of predicted poses.
-            If route_holds is needed, it must accept it as a second arg.
+        predict_fn: Callable(gt_frames, route_holds?, stem?) -> list of predicted poses.
+            If route_holds is needed, it must accept route_holds and stem as 2nd/3rd args.
         sequences: Test set pose sequences.
         scores: Test set confidence scores.
         stems: Test set video stems.
@@ -81,7 +82,7 @@ def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds=None):
             continue
 
         if route_holds is not None:
-            preds, _ = predict_fn(gt_frames, route_holds[i], verbose=False)
+            preds, _ = predict_fn(gt_frames, route_holds[i], stem, verbose=False)
         else:
             preds = predict_fn(gt_frames)
 
@@ -219,8 +220,8 @@ def main():
         "--dataset", type=Path, default=config.DATA_DIR / "dataset.npz",
     )
     parser.add_argument(
-        "--greedy", action="store_true",
-        help="Include greedy IK baseline",
+        "--hanging", action="store_true",
+        help="Include hanging baseline",
     )
     parser.add_argument(
         "--checkpoints", type=Path, nargs="+", default=[],
@@ -240,6 +241,7 @@ def main():
     scores = data["test_scores"]
     stems = data["test_stems"]
     route_holds = data["test_route_holds"]
+    bl = compute_rl_bone_lengths(data["train_sequences"])
 
     print(f"Test set: {len(sequences)} videos")
     results = []
@@ -253,15 +255,15 @@ def main():
     if static:
         results.append(static)
 
-    # --- Greedy IK baseline ---
-    if args.greedy:
-        print("Evaluating greedy IK baseline...")
-        greedy = eval_baseline(
-            "Greedy IK", greedy_ik_baseline_predictions,
+    # --- Naive hanging baseline ---
+    if args.hanging:
+        print("Evaluating hanging baseline...")
+        hanging = eval_baseline(
+            "Hanging", partial(hanging_baseline_predictions, bone_lengths=bl),
             sequences, scores, stems, route_holds,
         )
-        if greedy:
-            results.append(greedy)
+        if hanging:
+            results.append(hanging)
 
     # --- Model checkpoints ---
     if args.checkpoints:

@@ -110,6 +110,12 @@ BOARD_SPACE_MAX_DISPLACEMENT = 5.0  # max mean keypoint displacement per frame i
 EVAL_CONFIDENCE_THRESHOLD = KEYPOINT_CONFIDENCE_THRESHOLD
 
 ########################
+# Hanging Baseline
+########################
+
+HANGING_SHOULDER_DROP = 0.6   # fraction of avg arm reach: how far shoulders sit below hand midpoint
+
+########################
 # Calibration
 ########################
 

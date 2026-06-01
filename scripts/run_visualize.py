@@ -9,8 +9,8 @@ Usage:
     # Ground truth overlay for a specific video
     python scripts/run_visualize.py --video bump_it --mode gt
     
-    # Greedy IK baseline for a specific climb
-    python scripts/run_visualize.py --video bump_it --mode greedy --climb "Bump It"
+    # Hanging baseline for a specific climb
+    python scripts/run_visualize.py --video bump_it --mode hanging --climb "Bump It"
 
     # Model prediction from a video's starting pose
     python scripts/run_visualize.py --video bump_it --mode predict --checkpoint data/checkpoints/best.pt
@@ -50,7 +50,7 @@ from models.world_model import (
     StructuredPoseTransformer,
     resolve_hold_sequence_and_targets,
 )
-from evaluation.baselines import greedy_ik_baseline_predictions
+from evaluation.baselines import hanging_baseline_predictions
 
 
 def load_gt_poses(video_stem: str) -> tuple[list[np.ndarray], float]:
@@ -139,7 +139,7 @@ def main():
         help="Video stem (e.g. 'bump_it') to use as source for GT or seed poses",
     )
     parser.add_argument(
-        "--mode", choices=["gt", "gt_moves", "predict", "greedy"], default="gt",
+        "--mode", choices=["gt", "gt_moves", "predict", "hanging"], default="gt",
         help="'gt' renders ground truth, 'gt_moves' shows detected move targets, 'predict' runs model rollout",
     )
     parser.add_argument(
@@ -239,15 +239,17 @@ def main():
             title=" ".join(title_parts),
         )
         return
-    elif args.mode == "greedy":
+    elif args.mode == "hanging":
         if route_holds is None:
-            print("Error: --climb is required for greedy mode (need holds for interpolation)")
+            print("Error: --climb is required for hanging mode (need holds for interpolation)")
             sys.exit(1)
-        preds, target_positions = greedy_ik_baseline_predictions(gt_poses, route_holds)
-        poses = [gt_poses[0]] + preds
+        preds, target_positions, initial_pose = hanging_baseline_predictions(
+            gt_poses, route_holds, args.video
+        )
+        poses = [initial_pose] + preds
         # Prepend a NaN row so target_positions aligns with poses (T frames)
         target_positions = np.vstack([[[np.nan, np.nan]], target_positions])
-        title_parts.append("- greedy IK baseline")
+        title_parts.append("- hanging baseline")
     else:
         model = load_model(args.checkpoint, device)
         n_frames = args.n_frames or int(len(gt_poses) * args.speed)
