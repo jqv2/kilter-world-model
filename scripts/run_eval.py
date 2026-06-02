@@ -5,9 +5,6 @@ Evaluates on the test split of the built dataset and prints a comparison
 table with teacher-forcing and autoregressive metrics for each method.
 
 Usage:
-    # Static baseline only
-    python scripts/run_eval.py
-
     # Add greedy IK baseline
     python scripts/run_eval.py --hanging
 
@@ -51,24 +48,19 @@ from scripts.train import (
 )
 
 
-def static_baseline_predictions(gt_frames):
-    """Predict the first frame's pose for all subsequent frames."""
-    first = gt_frames[0]
-    return [first.copy() for _ in range(len(gt_frames) - 1)]
-
-
-def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds=None):
+def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds):
     """
-    Evaluate a baseline that produces predictions from GT frames.
+    Evaluate a baseline that produces climbing-keypoint predictions.
 
     Args:
         name: Display name for this method.
-        predict_fn: Callable(gt_frames, route_holds?, stem?) -> list of predicted poses.
-            If route_holds is needed, it must accept route_holds and stem as 2nd/3rd args.
-        sequences: Test set pose sequences.
+        predict_fn: Callable(gt_frames, route_holds, stem, verbose=False)
+            -> tuple whose first element is a list of predicted poses
+            in climbing-keypoint space (NUM_CLIMBING_KEYPOINTS, 2).
+        sequences: Test set pose sequences (17-keypoint).
         scores: Test set confidence scores.
         stems: Test set video stems.
-        route_holds: Test set route holds (needed for greedy IK).
+        route_holds: Test set route holds.
 
     Returns:
         Dict with per-video and aggregate metrics.
@@ -76,19 +68,18 @@ def eval_baseline(name, predict_fn, sequences, scores, stems, route_holds=None):
     all_errors = []
     per_video = []
 
+    idx = config.CLIMBING_KEYPOINT_INDICES
+
     for i, (seq, sc, stem) in enumerate(zip(sequences, scores, stems)):
         gt_frames = list(seq)
         if len(gt_frames) < 2:
             continue
 
-        if route_holds is not None:
-            preds, _ = predict_fn(gt_frames, route_holds[i], stem, verbose=False)
-        else:
-            preds = predict_fn(gt_frames)
+        result = predict_fn(gt_frames, route_holds[i], stem, verbose=False)
+        preds = result[0]
 
-        idx = config.CLIMBING_KEYPOINT_INDICES
         errors = per_frame_errors(
-            [p[idx] for p in preds],
+            preds,
             [g[idx] for g in gt_frames],
             [s[idx] for s in list(sc)],
             config.KEYPOINT_CONFIDENCE_THRESHOLD,
@@ -245,15 +236,6 @@ def main():
 
     print(f"Test set: {len(sequences)} videos")
     results = []
-
-    # --- Static baseline ---
-    print("\nEvaluating static baseline...")
-    static = eval_baseline(
-        "Static (repeat frame 0)", static_baseline_predictions,
-        sequences, scores, stems,
-    )
-    if static:
-        results.append(static)
 
     # --- Naive hanging baseline ---
     if args.hanging:

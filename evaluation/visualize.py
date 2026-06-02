@@ -31,6 +31,8 @@ RENDER_SCALE = 8
 # Padding around the board in board units
 RENDER_PAD = 4
 
+_HEAD_RADIUS_BU = config.RL_HEAD_RADIUS / config.RL_BOARD_UNIT_TO_METERS
+
 # Colors (BGR for OpenCV)
 COLOR_HOLD = (160, 160, 160)
 COLOR_START = (0, 255, 0)       # green
@@ -249,6 +251,7 @@ def draw_skeleton(
     thickness: int = 2,
     joint_radius: int = 4,
     head_pos: np.ndarray | None = None,
+    draw_head=True,
 ) -> None:
     """
     Draw a skeleton on a board image (in-place).
@@ -279,10 +282,15 @@ def draw_skeleton(
         pt = board_to_pixel(kp[0], kp[1], scale, pad)
         cv2.circle(img, pt, joint_radius, joint_color, -1)
         
-    if head_pos is not None:
+    # Auto-compute head for climbing-keypoint poses
+    if head_pos is None and draw_head and n_kp == config.NUM_CLIMBING_KEYPOINTS:
+        shoulder_mid = (keypoints[0] + keypoints[1]) / 2
+        head_pos = shoulder_mid + np.array([0, _HEAD_RADIUS_BU])
+
+    if head_pos is not None and draw_head:
         pt = board_to_pixel(head_pos[0], head_pos[1], scale, pad)
-        head_radius_px = max(joint_radius + 2, int(scale * 0.4))
-        cv2.circle(img, pt, head_radius_px, joint_color, 2)
+        r_px = max(1, int(_HEAD_RADIUS_BU * scale))
+        cv2.circle(img, pt, r_px, joint_color, 2)
         
 
 def render_pose_video(
@@ -503,10 +511,7 @@ def draw_rl_frame(
             cv2.line(img, tuple(pts_px[0]), tuple(pts_px[1]),
                      (0, 0, 200), 2)
         else:
-            centroid = support_bu.mean(axis=0)
-            angles = np.arctan2(support_bu[:, 1] - centroid[1],
-                                support_bu[:, 0] - centroid[0])
-            ordered_px = pts_px[np.argsort(angles)].reshape(-1, 1, 2)
+            ordered_px = pts_px.reshape(-1, 1, 2)
             overlay = img.copy()
             cv2.fillPoly(overlay, [ordered_px], (0, 0, 180))
             cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
@@ -528,7 +533,7 @@ def draw_rl_frame(
         cv2.circle(img, cog_px, 6, (255, 255, 255), 1)
 
     # 4. Skeleton (without head — drawn separately with physical radius)
-    draw_skeleton(img, keypoints, scale, pad)
+    draw_skeleton(img, keypoints, scale, pad, draw_head=False)
 
     # 5. Head circle
     if head_pos is not None:

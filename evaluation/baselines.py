@@ -110,50 +110,48 @@ def _build_hanging_pose(
     shoulder_offset: float,
 ) -> np.ndarray:
     """
-    Build a 17-keypoint COCO pose hanging from two hand positions.
+    Build a climbing-keypoint pose hanging from two hand positions.
 
     Shoulders sit a fixed distance below the hand midpoint. Torso and
     legs hang vertically.  Arms are solved via 2-bone IK with elbows
-    bending outward.  Head is placed one head-radius above the shoulder
-    midpoint (matching the RL ragdoll).  The skeleton is fully symmetric.
+    bending outward.  The skeleton is fully symmetric.
 
     Args:
         l_hand_pos: (2,) left hand hold position in board units.
         r_hand_pos: (2,) right hand hold position in board units.
         bl: Bone lengths dict from compute_rl_bone_lengths.
         shoulder_offset: Vertical drop from hand midpoint to shoulders.
+
+    Returns:
+        (NUM_CLIMBING_KEYPOINTS, 2) pose in board units.
     """
-    pose = np.zeros((17, 2), dtype=np.float32)
+    pose = np.zeros((config.NUM_CLIMBING_KEYPOINTS, 2), dtype=np.float32)
     hand_mid = (l_hand_pos + r_hand_pos) / 2
     shoulder_mid = hand_mid - np.array([0, shoulder_offset])
 
     hsw = bl["half_shoulder_width"]
     hhw = bl["half_hip_width"]
 
-    # Shoulders
-    pose[5] = shoulder_mid + np.array([-hsw, 0])
-    pose[6] = shoulder_mid + np.array([hsw, 0])
+    # Shoulders (climbing idx 0=L, 1=R)
+    pose[0] = shoulder_mid + np.array([-hsw, 0])
+    pose[1] = shoulder_mid + np.array([hsw, 0])
 
     # Arms via IK (elbows bend outward: +1 left, -1 right)
     for (root, mid, end), hold, bend in [
-        ((5, 7, 9), l_hand_pos, 1.0),
-        ((6, 8, 10), r_hand_pos, -1.0),
+        ((0, 2, 4), l_hand_pos, 1.0),
+        ((1, 3, 5), r_hand_pos, -1.0),
     ]:
         pose[mid], pose[end] = _solve_two_bone_ik(
             pose[root], hold, bl["upper_arm"], bl["forearm"], bend
         )
 
     # Torso + legs hang straight down
-    pose[11] = shoulder_mid + np.array([-hhw, -bl["torso"]])
-    pose[12] = shoulder_mid + np.array([hhw, -bl["torso"]])
-    pose[13] = pose[11] - np.array([0, bl["thigh"]])
-    pose[14] = pose[12] - np.array([0, bl["thigh"]])
-    pose[15] = pose[13] - np.array([0, bl["shin"]])
-    pose[16] = pose[14] - np.array([0, bl["shin"]])
-
-    # Head: center one head-radius above shoulder midpoint (matches RL)
-    head_center = shoulder_mid + np.array([0, _HEAD_RADIUS_BU])
-    pose[:5] = head_center
+    pose[6] = shoulder_mid + np.array([-hhw, -bl["torso"]])
+    pose[7] = shoulder_mid + np.array([hhw, -bl["torso"]])
+    pose[8] = pose[6] - np.array([0, bl["thigh"]])
+    pose[9] = pose[7] - np.array([0, bl["thigh"]])
+    pose[10] = pose[8] - np.array([0, bl["shin"]])
+    pose[11] = pose[9] - np.array([0, bl["shin"]])
 
     return pose
 
@@ -186,8 +184,9 @@ def hanging_baseline_predictions(
 
     Returns:
         Tuple of (predictions, target_positions, initial_pose) where
-        predictions is a list of T-1 poses (17, 2), target_positions is
-        (T-1, 2), and initial_pose is the frame-0 hanging pose (17, 2).
+        predictions is a list of T-1 poses (NUM_CLIMBING_KEYPOINTS, 2),
+        target_positions is (T-1, 2), and initial_pose is the frame-0
+        hanging pose (NUM_CLIMBING_KEYPOINTS, 2).
     """
     T = len(gt_frames)
 
@@ -230,7 +229,7 @@ def hanging_baseline_predictions(
         print(f"  Hanging baseline: {len(transitions)} transitions over {T} frames")
 
     # --- Rebuild pose at every frame -------------------------------------
-    all_poses = np.empty((T, 17, 2), dtype=np.float32)
+    all_poses = np.empty((T, config.NUM_CLIMBING_KEYPOINTS, 2), dtype=np.float32)
     target_positions = np.full((T, 2), np.nan, dtype=np.float32)
 
     cur_l = hold_by_name[override["start_hands"]["L"]].copy()

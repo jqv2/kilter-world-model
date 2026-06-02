@@ -1725,8 +1725,17 @@ def rollout_episode(
             idx = env._anchor_hold_idx.get(limb)
             if idx is not None and idx >= 0:
                 anchored_map[limb] = env._hold_positions_bu[idx]
-        if len(anchored_map) == 4 and not _is_valid_support_quad(anchored_map):
-            support_polygons.append(np.empty((0, 2)))
+        if len(anchored_map) == 4:
+            if not _is_valid_support_quad(anchored_map):
+                support_polygons.append(np.empty((0, 2)))
+            else:
+                # Anatomical winding: LH → RH → RF → LF
+                support_polygons.append(np.array([
+                    anchored_map["left_hand"],
+                    anchored_map["right_hand"],
+                    anchored_map["right_foot"],
+                    anchored_map["left_foot"],
+                ]))
         else:
             anchored = list(anchored_map.values())
             support_polygons.append(

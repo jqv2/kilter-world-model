@@ -678,31 +678,40 @@ def enforce_bone_lengths(
 
 def compute_reference_bone_lengths(
     sequences: list[np.ndarray],
-    percentile: float = 95.0,
+    percentile: float = config.RL_BONE_LENGTH_PERCENTILE,
 ) -> np.ndarray:
     """
     Compute maximum plausible bone lengths from training sequences.
 
-    Uses a high percentile rather than true max to be robust to
-    occasional ViTPose tracking errors that produce spuriously long bones.
+    Uses symmetric left/right pooling (both arms share one length, etc.)
+    and the RL_BONE_LENGTH_PERCENTILE. Delegates to compute_rl_bone_lengths
+    for the actual computation, then maps the named dict to BONE_PAIRS order.
 
     Args:
         sequences: List of (T, 17, 2) arrays from the training set.
-        percentile: Percentile to use as the max (default 95th).
+        percentile: Percentile to use (default RL_BONE_LENGTH_PERCENTILE).
 
     Returns:
-        (n_bones,) array of max plausible bone lengths.
+        (n_bones,) array of max plausible bone lengths, one per BONE_PAIRS entry.
     """
-    all_lengths = []
-    for seq in sequences:
-        seq_f = seq[:, config.CLIMBING_KEYPOINT_INDICES, :] if seq.shape[1] > config.NUM_CLIMBING_KEYPOINTS else seq
-        for t in range(seq_f.shape[0]):
-            lengths = []
-            for i, j in BONE_PAIRS:
-                diff = seq_f[t, i] - seq_f[t, j]
-                lengths.append(np.linalg.norm(diff))
-            all_lengths.append(lengths)
-    return np.percentile(all_lengths, percentile, axis=0).astype(np.float32)
+    from evaluation.baselines import compute_rl_bone_lengths
+
+    bl = compute_rl_bone_lengths(sequences, percentile)
+
+    return np.array([
+        bl["upper_arm"],                    # (0, 2)  L upper arm
+        bl["forearm"],                      # (2, 4)  L forearm
+        bl["upper_arm"],                    # (1, 3)  R upper arm
+        bl["forearm"],                      # (3, 5)  R forearm
+        bl["torso"],                        # (0, 6)  L torso
+        bl["torso"],                        # (1, 7)  R torso
+        bl["half_hip_width"] * 2,           # (6, 7)  hips
+        bl["half_shoulder_width"] * 2,      # (0, 1)  shoulders
+        bl["thigh"],                        # (6, 8)  L thigh
+        bl["shin"],                         # (8, 10) L shin
+        bl["thigh"],                        # (7, 9)  R thigh
+        bl["shin"],                         # (9, 11) R shin
+    ], dtype=np.float32)
 
 def _limb_arrival_threshold(limb_id: int) -> float:
     """Return the arrival threshold for a given limb ID."""
