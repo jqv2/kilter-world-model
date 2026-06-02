@@ -124,3 +124,214 @@ def summarize_autoregressive(errors: np.ndarray) -> dict:
         "p75": float(valid[indices[2]]),
         "p100": float(valid[indices[3]]),
     }
+    
+
+# --- Climbing keypoint indices for hip/shoulder in climbing space ---
+_HIP_L, _HIP_R = 6, 7
+_SHOULDER_L, _SHOULDER_R = 0, 1
+
+
+def build_pose_bank(
+    train_sequences: list[np.ndarray],
+    dedup_threshold: float | None = None,
+    skip_frames: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a deduplicated, hip-centered reference pose bank.
+
+    Extracts climbing keypoints from training sequences, centers each pose
+    on the hip midpoint, and filters near-static duplicates so the bank
+    represents the diversity of configurations rather than the frequency
+    of standing still.
+
+    Returns two versions of the bank: the raw (N, 12, 2) hip-centered poses
+    for raw Euclidean lookup, and a unit-Frobenius-normalized copy for
+    vectorized Procrustes distance. No KD-tree is needed — the 2D
+    closed-form Procrustes is fast enough to evaluate the full bank.
+
+    Args:
+        train_sequences: List of (T, 17, 2) training pose arrays.
+        dedup_threshold: Minimum mean per-keypoint displacement (board units)
+            between consecutive included poses from the same sequence.
+            Defaults to config.NN_POSE_DEDUP_THRESHOLD.
+        skip_frames: Number of frames to skip at the start of each sequence
+            (setup/establishment phase). Defaults to
+            CONTEXT_WINDOW * ROLLOUT_STRIDE (the seed length).
+
+    Returns:
+        (bank, bank_norm) where bank is (N, 12, 2) hip-centered poses and
+        bank_norm is (N, 12, 2) unit-Frobenius-normalized for Procrustes.
+    """
+    import config
+
+    if dedup_threshold is None:
+        dedup_threshold = config.NN_POSE_DEDUP_THRESHOLD
+    if skip_frames is None:
+        skip_frames = config.CONTEXT_WINDOW * config.ROLLOUT_STRIDE
+
+    idx = config.CLIMBING_KEYPOINT_INDICES
+    collected = []
+
+    for seq in train_sequences:
+        climbing = seq[skip_frames:, idx, :]  # (T - skip, 12, 2)
+        hips = climbing[:, [_HIP_L, _HIP_R], :].mean(axis=1, keepdims=True)
+        centered = climbing - hips
+
+        last_kept = None
+        for t in range(len(centered)):
+            if last_kept is None:
+                collected.append(centered[t])
+                last_kept = centered[t]
+            else:
+                mean_disp = np.linalg.norm(centered[t] - last_kept, axis=1).mean()
+                if mean_disp >= dedup_threshold:
+                    collected.append(centered[t])
+                    last_kept = centered[t]
+
+    bank = np.array(collected)  # (N, 12, 2)
+
+    # Pre-normalize for Procrustes
+    norms = np.linalg.norm(bank.reshape(len(bank), -1), axis=1, keepdims=True)
+    norms = np.clip(norms, 1e-8, None)
+    bank_norm = bank / norms.reshape(len(bank), 1, 1)
+
+    return bank, bank_norm
+
+
+def pose_bank_summary(
+    bank: np.ndarray,
+    train_sequences: list[np.ndarray],
+) -> dict:
+    """
+    Diagnostic info about the pose bank for sanity checking.
+
+    Args:
+        bank: (N, 12, 2) hip-centered bank from build_pose_bank.
+        train_sequences: Original training sequences (for raw frame count).
+
+    Returns:
+        Dict with bank_size, raw_frame_count, and compression_ratio.
+    """
+    import config
+
+    raw = sum(len(s) for s in train_sequences)
+    return {
+        "bank_size": len(bank),
+        "raw_frame_count": raw,
+        "compression_ratio": f"{raw / len(bank):.1f}x",
+    }
+
+
+def _batch_procrustes_distances(
+    query: np.ndarray,
+    bank_norm: np.ndarray,
+) -> np.ndarray:
+    """
+    Vectorized Procrustes distance from one query to the entire bank.
+
+    Uses the closed-form 2D Procrustes distance: for unit-normalized
+    shapes q and r, d² = 2 - 2·sqrt(trace(MᵀM) + 2·det(M)) where
+    M = rᵀq is the 2×2 cross-covariance. No SVD or per-candidate
+    loop needed.
+
+    Args:
+        query: (12, 2) hip-centered pose, NOT yet normalized.
+        bank_norm: (N, 12, 2) unit-Frobenius-normalized bank.
+
+    Returns:
+        (N,) Procrustes distances to every bank entry.
+    """
+    q_norm = np.linalg.norm(query)
+    if q_norm < 1e-8:
+        return np.full(len(bank_norm), float("inf"))
+    q = query / q_norm
+
+    # M_all[i] = bank_norm[i].T @ q, shape (N, 2, 2)
+    M_all = np.einsum("nkj,kl->njl", bank_norm, q)
+
+    # trace(M.T @ M) = sum of squared entries
+    tr = (M_all ** 2).sum(axis=(1, 2))
+
+    # det(M) for 2x2
+    det = M_all[:, 0, 0] * M_all[:, 1, 1] - M_all[:, 0, 1] * M_all[:, 1, 0]
+
+    d_sq = 2.0 - 2.0 * np.sqrt(np.clip(tr + 2.0 * det, 0, None))
+    return np.sqrt(np.clip(d_sq, 0, None))
+
+
+def nearest_neighbor_pose_distance(
+    predicted_poses: list[np.ndarray],
+    bank: np.ndarray,
+    bank_norm: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Per-frame nearest-neighbor pose distance, with and without Procrustes.
+
+    Computes exact Procrustes distance to every bank entry using a
+    closed-form 2D formula (no approximation, no KD-tree). Also returns
+    the raw hip-centered Euclidean 1-NN distance as a diagnostic.
+
+    Args:
+        predicted_poses: List of (12, 2) predicted climbing-keypoint poses.
+        bank: (N, 12, 2) hip-centered reference bank from build_pose_bank.
+        bank_norm: (N, 12, 2) unit-normalized bank from build_pose_bank.
+
+    Returns:
+        Dict with:
+            'procrustes': (T,) per-frame exact Procrustes NN distances.
+            'raw': (T,) per-frame hip-centered Euclidean NN distances.
+    """
+    bank_flat = bank.reshape(len(bank), -1)  # (N, 24) for raw Euclidean
+
+    proc_dists = np.empty(len(predicted_poses))
+    raw_dists = np.empty(len(predicted_poses))
+
+    for t, pose in enumerate(predicted_poses):
+        hip = pose[[_HIP_L, _HIP_R]].mean(axis=0)
+        centered = pose - hip
+
+        # Raw: Euclidean 1-NN
+        raw_dists[t] = np.linalg.norm(bank_flat - centered.ravel(), axis=1).min()
+
+        # Procrustes: exact, vectorized over full bank
+        proc_dists[t] = _batch_procrustes_distances(centered, bank_norm).min()
+
+    return {"procrustes": proc_dists, "raw": raw_dists}
+
+
+def summarize_nn_distances(
+    distances: dict[str, np.ndarray],
+    poses: list[np.ndarray],
+) -> dict:
+    """
+    Aggregate per-frame NN pose distances into per-climb summary statistics.
+
+    Uses displacement-weighted mean as the primary aggregate so that
+    transition frames (where methods actually differ) contribute more
+    than static frames.
+
+    Args:
+        distances: Dict with 'procrustes' and 'raw' arrays from
+            nearest_neighbor_pose_distance, each shape (T,).
+        poses: List of T (12, 2) predicted poses, used to compute
+            per-frame displacement weights.
+
+    Returns:
+        Dict with weighted_mean, median, and p95 for each variant.
+    """
+    # Displacement weights: mean keypoint movement from previous frame
+    displacements = np.zeros(len(poses))
+    for t in range(1, len(poses)):
+        displacements[t] = np.linalg.norm(poses[t] - poses[t - 1], axis=1).mean()
+    # Ensure nonzero total weight
+    weights = displacements / displacements.sum() if displacements.sum() > 0 else np.ones(len(poses)) / len(poses)
+
+    summary = {}
+    for key in ("procrustes", "raw"):
+        d = distances[key]
+        summary[key] = {
+            "weighted_mean": float(np.average(d, weights=weights)),
+            "median": float(np.median(d)),
+            "p95": float(np.percentile(d, 95)),
+        }
+    return summary

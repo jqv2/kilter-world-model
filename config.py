@@ -108,6 +108,8 @@ BOARD_SPACE_MAX_DISPLACEMENT = 5.0  # max mean keypoint displacement per frame i
 
 # Metrics are computed only on keypoints above this confidence
 EVAL_CONFIDENCE_THRESHOLD = KEYPOINT_CONFIDENCE_THRESHOLD
+# Nearest-neighbor pose distance
+NN_POSE_DEDUP_THRESHOLD = 0.5     # min hip-centered displacement (board units) to include a new pose in the bank
 
 ########################
 # Hanging Baseline
@@ -207,7 +209,7 @@ RL_GRAB_THRESHOLD = 6.0               # board units, max distance to grab a hold
 # RL Baseline — Environment
 RL_STEP_LIMIT = 350
 RL_STEPS_PER_TARGET = 60             # steps allowed per target hand hold
-RL_HOLD_JITTER = 0.5               # board units, ±random offset per hold per reset
+RL_HOLD_JITTER = 0.0               # board units, ±random offset per hold per reset
 RL_SETTLE_STEPS = 30               # Pymunk substeps during reset to find equilibrium
 RL_MOTOR_GAIN = 10.0               # proportional gain for motor target chasing
 
@@ -215,11 +217,11 @@ RL_MOTOR_GAIN = 10.0               # proportional gain for motor target chasing
 RL_REWARD_STEP_PENALTY = -0.01
 RL_REWARD_ARRIVAL_BONUS = 50.0
 RL_REWARD_FINISH_BONUS = 100.0
-RL_HAND_PROXIMITY_SCALE = 4.0
+RL_HAND_PROXIMITY_SCALE = 3.0
 RL_CONTACT_REWARD_COG_INSIDE = 0.1
-RL_CONTACT_COG_DISTANCE_SCALE = -0.05
-RL_CONTACT_PENALTY_2HANDS = -0.5
-RL_CONTACT_PENALTY_1HAND = -1.0
+RL_CONTACT_COG_DISTANCE_SCALE = -0.1
+RL_CONTACT_PENALTY_2HANDS = -1.0
+RL_CONTACT_PENALTY_1HAND = -2.0
 RL_CONTACT_PENALTY_TERMINAL = -20
 RL_CONTACT_PENALTY_TIMEOUT = 0
 RL_BEST_RETURN_THRESHOLD = 2.0        # minimum improvement to trigger best_return milestone
@@ -236,7 +238,7 @@ RL_PPO_ENTROPY_COEF = 0.0075
 RL_PPO_MAX_GRAD_NORM = 0.5
 RL_HIDDEN_DIM = 128
 RL_HIDDEN_LAYERS = 2
-RL_TOTAL_FRAMES = 1_000_000
+RL_TOTAL_FRAMES = 3_000_000
 RL_CHECKPOINT_INTERVAL = 50_000
 RL_CHECKPOINT_DIR = DATA_DIR / "rl_checkpoints"
 RL_LOG_DIR = DATA_DIR / "rl_logs"

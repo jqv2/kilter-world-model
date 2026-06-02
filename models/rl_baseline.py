@@ -127,8 +127,14 @@ def _get_joint_limits(joint_name: str) -> tuple[float, float] | None:
     Knees allow full (-π, π) range for drop-knees and heel hooks.
     Hips and shoulders rotate freely (no limit joint created).
     """
-    if "shoulder" in joint_name or "hip" in joint_name:
-        return None
+    if "shoulder" in joint_name:
+        if "right" in joint_name:
+            return (-math.pi, math.pi / 6)
+        return (-math.pi / 6, math.pi)
+    if "hip" in joint_name:
+        if "right" in joint_name:
+            return (5 * math.pi / 6, 11 * math.pi / 6)
+        return (-11 * math.pi / 6, -5 * math.pi / 6)
     if "knee" in joint_name:
         if "right" in joint_name:
             return (-5 * math.pi / 6, 0.0)

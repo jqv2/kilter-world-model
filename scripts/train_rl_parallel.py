@@ -8,6 +8,7 @@ Usage::
 
     python -m scripts.train_rl_parallel --routes data/rl_eval_routes.txt
     python -m scripts.train_rl_parallel --routes data/rl_eval_routes.txt --total-frames 500000 --device cuda
+    python -m scripts.train_rl_parallel --routes data/rl_eval_routes.txt --resume
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ def main():
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume each route from its latest checkpoint (skips routes with no checkpoint)",
+    )
     args = parser.parse_args()
 
     route_names = _parse_route_names(Path(args.routes))
@@ -79,6 +84,20 @@ def main():
             "--run-name", run_name,
             "--device", args.device or "cpu",
         ]
+
+        if args.resume:
+            ckpt_dir = config.RL_CHECKPOINT_DIR / run_name
+            if ckpt_dir.exists():
+                # Pick the most recently written checkpoint (step, milestone, or final)
+                all_ckpts = list(ckpt_dir.glob("*.pt"))
+                if all_ckpts:
+                    ckpt_path = max(all_ckpts, key=lambda p: p.stat().st_mtime)
+                    print(f"  Resuming {run_name} from {ckpt_path.name}")
+                    cmd += ["--resume", str(ckpt_path)]
+                else:
+                    print(f"  No checkpoint found for {run_name}, starting fresh")
+            else:
+                print(f"  No checkpoint dir for {run_name}, starting fresh")
 
         if args.dry_run:
             print(f"  [dry-run] {' '.join(cmd)}")

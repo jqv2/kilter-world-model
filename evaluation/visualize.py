@@ -15,9 +15,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch
 
 import config
 from models.world_model import enforce_bone_lengths, check_hand_arrival
+from evaluation.metrics import _batch_procrustes_distances, _HIP_L, _HIP_R
+
 
 
 # ─── Board rendering constants ───────────────────────────────────────────────
@@ -960,3 +964,151 @@ def autoregressive_rollout_structured(
                     consecutive_near = 0
 
     return all_poses, np.array(all_targets)
+
+
+def plot_nn_pose_comparison(
+    method_poses: dict[str, np.ndarray],
+    bank: np.ndarray,
+    bank_norm: np.ndarray,
+    output_path: Path | None = None,
+    alignment: str = "procrustes",
+) -> "plt.Figure":
+    """
+    Presentation figure: for each method, show a sample pose, its nearest
+    GT neighbor from the bank, and both overlaid after Procrustes alignment.
+
+    Produces a (n_methods × 3) grid:
+        Col 1: predicted pose (hip-centered)
+        Col 2: nearest GT neighbor (hip-centered)
+        Col 3: overlay after Procrustes alignment, with distance annotation
+
+    All poses are drawn in climbing-keypoint space with no board context,
+    centered at the origin.
+
+    Args:
+        method_poses: Maps method name → (12, 2) single sample pose in
+            climbing-keypoint space (NOT hip-centered — this function centers).
+        bank: (N, 12, 2) hip-centered reference bank from build_pose_bank.
+        bank_norm: (N, 12, 2) unit-normalized bank from build_pose_bank.
+        output_path: Save figure here. If None, calls plt.show().
+        alignment: 'procrustes' for rotation+scale-aligned overlay, or
+    """
+    methods = list(method_poses.keys())
+    n = len(methods)
+    fig, axes = plt.subplots(n, 3, figsize=(12, 4 * n))
+    if n == 1:
+        axes = axes[np.newaxis, :]
+
+    col_titles = [
+        "Predicted (hip-centered)",
+        "Nearest GT neighbor",
+        "Overlay (Procrustes)" if alignment == "procrustes" else "Overlay (raw)",
+    ]
+
+    for row, name in enumerate(methods):
+        pose = method_poses[name]
+        hip = pose[[_HIP_L, _HIP_R]].mean(axis=0)
+        centered = pose - hip
+
+        if alignment == "procrustes":
+            dists = _batch_procrustes_distances(centered, bank_norm)
+            best_idx = dists.argmin()
+            best_dist = dists[best_idx]
+            best_ref = bank[best_idx]
+            # Compute aligned query for overlay
+            q_norm = np.linalg.norm(centered)
+            r_norm = np.linalg.norm(best_ref)
+            if q_norm > 1e-8 and r_norm > 1e-8:
+                q = centered / q_norm
+                r = best_ref / r_norm
+                U, _, Vt = np.linalg.svd(r.T @ q)
+                d_sign = np.linalg.det(U @ Vt)
+                D = np.diag([1.0, np.sign(d_sign)])
+                R = U @ D @ Vt
+                best_overlay = (q @ R.T) * r_norm
+            else:
+                best_overlay = centered
+        else:
+            dists = np.linalg.norm(
+                bank.reshape(len(bank), -1) - centered.ravel(), axis=1
+            )
+            best_idx = dists.argmin()
+            best_dist = dists[best_idx]
+            best_ref = bank[best_idx]
+            best_overlay = centered
+
+        # --- Draw ---
+        panels = [
+            (centered, None, None),
+            (best_ref, None, None),
+            (best_ref, best_overlay, best_dist),
+        ]
+
+        for col, (primary, overlay, dist) in enumerate(panels):
+            ax = axes[row, col]
+            _draw_skeleton_mpl(ax, primary, color="steelblue",
+                               label="GT neighbor" if col == 2 else None)
+            if overlay is not None:
+                _draw_skeleton_mpl(ax, overlay, color="tomato", alpha=0.8,
+                                   label="Predicted (aligned)" if alignment == "procrustes"
+                                   else "Predicted (hip-centered)")
+                ax.legend(fontsize=7, loc="upper right")
+            if col == 0:
+                _draw_skeleton_mpl(ax, centered, color="tomato")
+
+            ax.set_aspect("equal")
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if row == 0:
+                ax.set_title(col_titles[col], fontsize=10)
+            if col == 0:
+                ax.set_ylabel(name, fontsize=11, fontweight="bold")
+            if dist is not None:
+                ax.annotate(
+                    f"d = {dist:.3f}",
+                    xy=(0.5, 0.02), xycoords="axes fraction",
+                    ha="center", fontsize=10, fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8),
+                )
+
+    fig.suptitle(
+        f"NN Pose Distance — {'Procrustes' if alignment == 'procrustes' else 'Raw (hip-centered)'}",
+        fontsize=13, fontweight="bold",
+    )
+
+    fig.tight_layout()
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Saved NN pose comparison to {output_path}")
+
+    return fig
+
+
+def _draw_skeleton_mpl(
+    ax: plt.Axes,
+    pose: np.ndarray,
+    color: str = "steelblue",
+    alpha: float = 1.0,
+    label: str | None = None,
+) -> None:
+    """Draw a climbing skeleton on a matplotlib axes.
+
+    Args:
+        ax: Matplotlib axes.
+        pose: (12, 2) climbing-keypoint array.
+        color: Line and joint color.
+        alpha: Opacity.
+        label: Legend label (applied to first bone only).
+    """
+    first = True
+    for i, j in config.CLIMBING_SKELETON:
+        ax.plot(
+            [pose[i, 0], pose[j, 0]],
+            [pose[i, 1], pose[j, 1]],
+            color=color, alpha=alpha, linewidth=2,
+            label=label if first else None,
+        )
+        first = False
+    ax.scatter(pose[:, 0], pose[:, 1], color=color, alpha=alpha, s=20, zorder=3)

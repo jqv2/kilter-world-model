@@ -126,7 +126,7 @@ def main():
     # ── 3. Bend left elbow while hanging ───────────────────────────
     space = create_space()
     ragdoll = create_ragdoll(space, bl, position=(0.0, 0.0))
-    reset_pose(ragdoll, space, {"left_hand": lh_hold, "right_hand": rh_hold})
+    reset_pose(ragdoll, space, {"right_hand": rh_hold})
 
     # Let it settle before applying motor
     for _ in range(120):
@@ -149,7 +149,7 @@ def main():
     # ── 4. Bend right elbow while hanging ───────────────────────────
     space = create_space()
     ragdoll = create_ragdoll(space, bl, position=(0.0, 0.0))
-    reset_pose(ragdoll, space, {"left_hand": lh_hold, "right_hand": rh_hold})
+    reset_pose(ragdoll, space, {"left_hand": lh_hold})
 
     # Let it settle before applying motor
     for _ in range(120):
@@ -172,7 +172,7 @@ def main():
     # ── 5. Bend left shoulder while hanging ───────────────────────────
     space = create_space()
     ragdoll = create_ragdoll(space, bl, position=(0.0, 0.0))
-    reset_pose(ragdoll, space, {"left_hand": lh_hold, "right_hand": rh_hold})
+    reset_pose(ragdoll, space, {"right_hand": rh_hold})
 
     # Let it settle before applying motor
     for _ in range(120):
@@ -195,7 +195,7 @@ def main():
     # ── 6. Bend right shoulder while hanging ───────────────────────────
     space = create_space()
     ragdoll = create_ragdoll(space, bl, position=(0.0, 0.0))
-    reset_pose(ragdoll, space, {"left_hand": lh_hold, "right_hand": rh_hold})
+    reset_pose(ragdoll, space, {"left_hand": lh_hold})
 
     # Let it settle before applying motor
     for _ in range(120):
