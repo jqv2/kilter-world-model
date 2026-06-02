@@ -249,24 +249,28 @@ def split_by_route(
     climb_log: dict[str, dict],
     train_fraction: float = 0.8,
     seed: int = 42,
+    force_test: list[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """
     Split video stems into train/test sets, grouping by route.
 
     Videos of the same route always go to the same split.
     Videos not in climb_log are assigned to training.
+    Videos that match a route specified in `force_test` are strictly assigned to test.
 
     Args:
         video_stems: All video stems in the dataset.
         climb_log: Dict from load_climb_log().
         train_fraction: Fraction of routes in training set.
         seed: Random seed for reproducibility.
+        force_test: List of route names to force into the test set.
 
     Returns:
         (train_stems, test_stems) as sets.
     """
     route_to_stems: dict[str, list[str]] = {}
     no_route = []
+    force_test_routes = set(force_test or [])
 
     for stem in video_stems:
         entry = climb_log.get(stem)
@@ -276,19 +280,34 @@ def split_by_route(
         else:
             no_route.append(stem)
 
-    rng = np.random.default_rng(seed)
-    routes = sorted(route_to_stems.keys())
-    rng.shuffle(routes)
-
-    n_train = max(1, int(len(routes) * train_fraction))
-    train_routes = set(routes[:n_train])
-
+    # Pre-allocate forced routes to test
     train_stems = set()
     test_stems = set()
-
+    
+    available_routes = []
     for route, stems in route_to_stems.items():
+        if route in force_test_routes:
+            test_stems.update(stems)
+        else:
+            available_routes.append(route)
+
+    # Random split on the remaining available routes
+    rng = np.random.default_rng(seed)
+    available_routes = sorted(available_routes)
+    rng.shuffle(available_routes)
+
+    # Calculate target train size based on the TOTAL number of routes, not just the leftovers
+    total_routes = len(route_to_stems)
+    target_train_count = max(1, int(total_routes * train_fraction))
+    
+    # Cap it just in case you manually forced more test routes than mathematically possible
+    n_train = min(target_train_count, len(available_routes))
+    
+    train_routes = set(available_routes[:n_train])
+
+    for route in available_routes:
         target = train_stems if route in train_routes else test_stems
-        target.update(stems)
+        target.update(route_to_stems[route])
 
     train_stems.update(no_route)
 
@@ -302,6 +321,7 @@ def build_dataset(
     seed: int = 42,
     normalize_holds: bool = True,
     apply_edits: bool = True,
+    force_test: list[str] | None = None,
 ) -> dict:
     """
     Build the full training dataset from all paired videos.
@@ -358,7 +378,7 @@ def build_dataset(
         )
 
     train_stems, test_stems = split_by_route(
-        list(processed.keys()), climb_log, train_fraction, seed
+        list(processed.keys()), climb_log, train_fraction, seed, force_test
     )
 
     train_seqs, train_scores, train_holds, train_roles, train_names, train_route_holds = [], [], [], [], [], []

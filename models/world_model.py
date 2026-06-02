@@ -918,6 +918,48 @@ def extract_move_targets(
     return targets
 
 
+def extract_target_hands(
+    hold_sequence: list[dict],
+    targets: np.ndarray,
+) -> list[str | None]:
+    """Derive per-frame hand assignment ('L'/'R') from hold sequence and targets.
+
+    Walks the hold sequence in order, matching each frame's target (x, y)
+    to the active entry.  Assumes *targets* was built by
+    :func:`extract_move_targets` or equivalent, so positions match the
+    hold_sequence entries exactly.
+
+    Args:
+        hold_sequence: Ordered list of hold dicts, each with 'x', 'y',
+            and 'hand' ('L' or 'R').
+        targets: (T, 2) board-space target positions per frame.
+
+    Returns:
+        Length-T list of 'L', 'R', or None (for NaN target frames).
+    """
+    if not hold_sequence or len(targets) == 0:
+        return [None] * len(targets)
+
+    hands: list[str | None] = []
+    seq_idx = 0
+    n_holds = len(hold_sequence)
+
+    for t in range(len(targets)):
+        pos = targets[t]
+        if np.isnan(pos).any():
+            hands.append(None)
+            continue
+        # Advance when target position no longer matches current entry
+        while seq_idx < n_holds - 1:
+            curr = hold_sequence[seq_idx]
+            if abs(pos[0] - curr["x"]) < 0.5 and abs(pos[1] - curr["y"]) < 0.5:
+                break
+            seq_idx += 1
+        hands.append(hold_sequence[seq_idx].get("hand"))
+
+    return hands
+
+
 def resolve_hold_sequence_and_targets(
     sequence_poses: np.ndarray,
     route_holds: list[dict],

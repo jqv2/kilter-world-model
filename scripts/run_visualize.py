@@ -49,6 +49,7 @@ from models.world_model import (
     compute_reference_bone_lengths,
     StructuredPoseTransformer,
     resolve_hold_sequence_and_targets,
+    extract_target_hands,
 )
 from evaluation.baselines import hanging_baseline_predictions
 
@@ -207,6 +208,7 @@ def main():
             
     is_structured = False
     target_positions = None
+    target_hands = None
 
     # Generate poses
     if args.mode == "gt":
@@ -222,6 +224,7 @@ def main():
         )
         print(f"  Derived hold sequence: {len(hold_seq)} holds visited"
               f"{'' if apply_hold_orders else ' (overrides ignored)'}")
+        target_hands_board = extract_target_hands(hold_seq, targets_board)
         title_parts.append("- move targets")
 
         if args.output:
@@ -237,19 +240,21 @@ def main():
             route_holds=route_holds,
             fps=fps,
             title=" ".join(title_parts),
+            target_hands=target_hands_board,
         )
         return
     elif args.mode == "hanging":
         if route_holds is None:
             print("Error: --climb is required for hanging mode (need holds for interpolation)")
             sys.exit(1)
-        preds, target_positions, initial_pose = hanging_baseline_predictions(
+        preds, target_positions, initial_pose, target_hands_hang = hanging_baseline_predictions(
             gt_poses, route_holds, args.video
         )
         poses = [initial_pose] + preds
         # Prepend a NaN row so target_positions aligns with poses (T frames)
         target_positions = np.vstack([[[np.nan, np.nan]], target_positions])
-        title_parts.append("- hanging baseline")
+        target_hands = [None] + target_hands_hang
+        title_parts.append("- hands-only baseline")
     else:
         model = load_model(args.checkpoint, device)
         n_frames = args.n_frames or int(len(gt_poses) * args.speed)
@@ -284,6 +289,7 @@ def main():
                 hold_seq, device, max_bone_lengths=ref_bones,
                 gt_poses=np.array(gt_poses),
             )
+            target_hands = extract_target_hands(hold_seq, target_positions)
         else:
             poses = autoregressive_rollout(
                 model, seed, n_frames, hold_positions, hold_roles, device,
@@ -318,6 +324,7 @@ def main():
             title=title,
             gt_poses=([p[config.CLIMBING_KEYPOINT_INDICES] for p in gt_poses]
                       if args.mode == "predict" else None),
+            target_hands=target_hands,
         )
     else:
         render_pose_video(

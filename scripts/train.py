@@ -623,8 +623,9 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
-        # Linear ramp: 0 at epoch 1 -> scheduled_sampling_max at final epoch
-        sampling_prob = args.scheduled_sampling_max * (epoch - 1) / max(args.epochs - 1, 1)
+        # Squashed ramp: reaches max at N/2 epochs, then plateaus for the rest of training
+        ramp_epochs = max(args.epochs // 2, 1)
+        sampling_prob = args.scheduled_sampling_max * min(1.0, (epoch - 1) / ramp_epochs)
 
         epoch_fn = train_epoch_structured if args.structured else train_epoch
         if args.structured:
@@ -701,6 +702,32 @@ def main():
                 },
                 "dataset_metadata": raw_meta,
             }, args.checkpoint_dir / "best.pt")
+        
+        # Save periodic checkpoint every 10 epochs
+        if epoch % 10 == 0:
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_loss": val_loss,
+                "config": {
+                    "hidden_dim": config.MODEL_HIDDEN_DIM,
+                    "n_layers": config.MODEL_LAYERS,
+                    "n_heads": config.MODEL_HEADS,
+                    "context_window": config.CONTEXT_WINDOW,
+                    "max_holds": config.MAX_ROUTE_HOLDS,
+                    "noise_std": args.noise_std,
+                    "bone_weight": args.bone_weight,
+                    "scheduled_sampling_max": args.scheduled_sampling_max,
+                    "structured": args.structured,
+                    "hold_orders_applied": apply_hold_orders,
+                    "hold_weight": args.hold_weight,
+                    "dropout": args.dropout,
+                    "weight_decay": args.weight_decay,
+                    "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
+                },
+                "dataset_metadata": raw_meta,
+            }, args.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pt")
 
         # Periodic evaluation
         if epoch % args.eval_every == 0 or epoch == args.epochs:

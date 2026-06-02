@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Start Pose Editor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a1a; color: #ddd; display: flex; height: 100vh; }
+
+  /* ── Left panel: route list ── */
+  #sidebar { width: 280px; background: #222; border-right: 1px solid #333; display: flex; flex-direction: column; }
+  #sidebar h2 { padding: 12px 16px; font-size: 14px; color: #888; border-bottom: 1px solid #333; }
+  #route-list { flex: 1; overflow-y: auto; }
+  .route-item {
+    padding: 10px 16px; cursor: pointer; border-bottom: 1px solid #2a2a2a;
+    font-size: 13px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .route-item:hover { background: #2a2a2a; }
+  .route-item.active { background: #333; border-left: 3px solid #f0a040; }
+  .route-item .name { font-weight: 500; }
+  .route-item .grade { color: #888; font-size: 12px; }
+  .route-item .badge {
+    font-size: 10px; padding: 2px 6px; border-radius: 3px;
+    background: #3a5a3a; color: #8f8;
+  }
+
+  /* ── Main area ── */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #toolbar {
+    padding: 10px 16px; background: #252525; border-bottom: 1px solid #333;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  #toolbar button {
+    padding: 6px 16px; border: 1px solid #555; border-radius: 4px;
+    background: #333; color: #ddd; cursor: pointer; font-size: 13px;
+  }
+  #toolbar button:hover { background: #444; }
+  #toolbar button.primary { background: #2a6a3a; border-color: #4a8a5a; }
+  #toolbar button.primary:hover { background: #3a7a4a; }
+  #toolbar button.danger { background: #6a2a2a; border-color: #8a4a4a; }
+  #toolbar button.danger:hover { background: #7a3a3a; }
+  #toolbar .status { font-size: 12px; color: #888; margin-left: auto; }
+
+  #canvas-wrap { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 16px; }
+  canvas { background: #282828; border-radius: 4px; cursor: crosshair; }
+
+  #info {
+    padding: 8px 16px; background: #222; border-top: 1px solid #333;
+    font-size: 12px; color: #888; display: flex; gap: 24px;
+  }
+
+  /* ── Empty state ── */
+  #empty-state {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 15px;
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>ROUTES</h2>
+  <div id="route-list"></div>
+</div>
+
+<div id="main">
+  <div id="toolbar">
+    <button id="btn-save" class="primary" disabled>Save Override</button>
+    <button id="btn-reset" class="danger" disabled>Reset to Auto</button>
+    <button id="btn-toggle-auto" disabled>Show Auto Pose</button>
+    <span class="status" id="status-text"></span>
+  </div>
+  <div id="canvas-wrap">
+    <div id="empty-state">Select a route from the left panel</div>
+    <canvas id="board" style="display:none"></canvas>
+  </div>
+  <div id="info">
+    <span id="info-torso"></span>
+    <span id="info-drag"></span>
+  </div>
+</div>
+
+<script>
+// ── Constants ──
+const SCALE = 5;  // pixels per board unit
+const MIN_PAD = 6;
+const MARGIN = 8;   // board units of breathing room beyond any joint
+let PAD = MIN_PAD;   // recomputed each draw to fit all skeleton points
+const BOARD = { left: 0, right: 144, bottom: 0, top: 156 };
+const KICKBOARD_Y = 12;
+
+const ROLE_COLORS = { 12: '#00ff00', 13: '#ffff00', 14: '#ff00ff', 15: '#00a5ff' };
+const COLOR_HOLD = '#666';
+const COLOR_SKEL = '#00e6ff';
+const COLOR_JOINT = '#0064ff';
+const COLOR_TORSO_FILL = '#f0a040';
+const COLOR_ANCHOR = '#ff4444';
+const COLOR_AUTO_SKEL = 'rgba(255,255,255,0.15)';
+
+// Climbing skeleton connections (indices into 12-keypoint array)
+const BONES = [
+  [0,1],[0,2],[2,4],[1,3],[3,5],[0,6],[1,7],[6,7],[6,8],[8,10],[7,9],[9,11]
+];
+// 0=L_shoulder 1=R_shoulder 2=L_elbow 3=R_elbow 4=L_wrist 5=R_wrist
+// 6=L_hip 7=R_hip 8=L_knee 9=R_knee 10=L_ankle 11=R_ankle
+
+// ── State ──
+let allHolds = [];
+let geometry = {};
+let currentRoute = null;
+let showAuto = false;
+
+// Editable pose state (board units)
+let torso = [0, 0];       // torso center
+let midJoints = {};        // {left_elbow: [x,y], right_elbow: [x,y], left_knee: [x,y], right_knee: [x,y]}
+let torsoAngle = 0;   // degrees from vertical, positive = lean right
+let autoPose = null;       // auto-computed pose for comparison
+
+// Drag state
+let dragging = null;  // null | 'torso' | 'left_elbow' | 'right_elbow' | 'left_knee' | 'right_knee'
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+
+// ── Coordinate transforms ──
+function b2c(bx, by) {
+  return [(bx - BOARD.left + PAD) * SCALE, (BOARD.top + PAD - by) * SCALE];
+}
+function c2b(cx, cy) {
+  return [cx / SCALE + BOARD.left - PAD, BOARD.top + PAD - cy / SCALE];
+}
+
+// ── IK solver (mirrors _solve_ik_2bone from rl_baseline.py) ──
+function solveIK(rx, ry, tx, ty, lenA, lenB, bendSign) {
+  const dx = tx - rx, dy = ty - ry;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1e-6) return [rx, ry - lenA];
+  const maxR = lenA + lenB;
+  if (dist >= maxR) {
+    const s = lenA / maxR;
+    return [rx + dx * s, ry + dy * s];
+  }
+  let cosA = (lenA*lenA + dist*dist - lenB*lenB) / (2 * lenA * dist);
+  cosA = Math.max(-1, Math.min(1, cosA));
+  const angle = Math.acos(cosA);
+  const base = Math.atan2(dy, dx);
+  const mid = base + bendSign * angle;
+  return [rx + lenA * Math.cos(mid), ry + lenA * Math.sin(mid)];
+}
+
+// Pick the IK solution (of two) closest to a target point
+function pickClosestIK(root, target, lenA, lenB, preferred) {
+  const a = solveIK(root[0], root[1], target[0], target[1], lenA, lenB, -1);
+  const b = solveIK(root[0], root[1], target[0], target[1], lenA, lenB, 1);
+  const da = Math.hypot(a[0]-preferred[0], a[1]-preferred[1]);
+  const db = Math.hypot(b[0]-preferred[0], b[1]-preferred[1]);
+  return da <= db ? a : b;
+}
+
+// ── Skeleton computation ──
+function computeSkeleton(torsoXY, mj, angleDeg) {
+  const g = geometry;
+  const tx = torsoXY[0], ty = torsoXY[1];
+  const aRad = (angleDeg || 0) * Math.PI / 180;
+
+  // Spine direction (hip→shoulder) and lateral direction (left-positive)
+  const sdx = Math.sin(aRad), sdy = Math.cos(aRad);
+  const ldx = -Math.cos(aRad), ldy = Math.sin(aRad);
+
+  // Shoulder and hip centers
+  const scx = tx + g.shoulder_offset * sdx, scy = ty + g.shoulder_offset * sdy;
+  const hcx = tx - g.hip_offset * sdx,      hcy = ty - g.hip_offset * sdy;
+
+  const shoulders = {
+    left:  [scx + g.half_shoulder_width * ldx, scy + g.half_shoulder_width * ldy],
+    right: [scx - g.half_shoulder_width * ldx, scy - g.half_shoulder_width * ldy],
+  };
+  const hips = {
+    left:  [hcx + g.half_hip_width * ldx, hcy + g.half_hip_width * ldy],
+    right: [hcx - g.half_hip_width * ldx, hcy - g.half_hip_width * ldy],
+  };
+
+  const kp = new Array(12);
+  kp[0] = shoulders.left;
+  kp[1] = shoulders.right;
+  kp[6] = hips.left;
+  kp[7] = hips.right;
+
+  // Arms
+  const handAnchors = getHandAnchors();
+  for (const [side, shoulderIdx, elbowIdx, wristIdx] of [
+    ['left', 0, 2, 4], ['right', 1, 3, 5]
+  ]) {
+    const anchor = handAnchors[side + '_hand'];
+    const shoulder = shoulders[side];
+    const elbowKey = side + '_elbow';
+    const elbow = mj[elbowKey]
+      ? pickClosestIK(shoulder, anchor, g.upper_arm, g.forearm, mj[elbowKey])
+      : solveIKDefault(shoulder, anchor, g.upper_arm, g.forearm, side, 'elbow');
+    kp[elbowIdx] = elbow;
+    kp[wristIdx] = anchor;
+    mj[elbowKey] = elbow;
+  }
+
+  // Legs
+  const footAnchors = getFootAnchors();
+  for (const [side, hipIdx, kneeIdx, ankleIdx] of [
+    ['left', 6, 8, 10], ['right', 7, 9, 11]
+  ]) {
+    const limb = side + '_foot';
+    const hip = hips[side];
+    const kneeKey = side + '_knee';
+    if (footAnchors[limb]) {
+      const foot = footAnchors[limb];
+      const knee = mj[kneeKey]
+        ? pickClosestIK(hip, foot, g.thigh, g.shin, mj[kneeKey])
+        : solveIKDefault(hip, foot, g.thigh, g.shin, side, 'knee');
+      kp[kneeIdx] = knee;
+      kp[ankleIdx] = foot;
+      mj[kneeKey] = knee;
+    } else {
+      // Free leg
+      const ankleKey = side + '_ankle';
+      let ankle = mj[ankleKey]
+        ? mj[ankleKey]
+        : [hip[0], hip[1] - g.thigh - g.shin];
+      const legReach = g.thigh + g.shin;
+      const dx = ankle[0] - hip[0], dy = ankle[1] - hip[1];
+      const dist = Math.hypot(dx, dy);
+      if (dist > legReach * 0.99) {
+        const s = legReach * 0.99 / dist;
+        ankle = [hip[0] + dx * s, hip[1] + dy * s];
+      }
+      mj[ankleKey] = ankle;
+      const knee = mj[kneeKey]
+        ? pickClosestIK(hip, ankle, g.thigh, g.shin, mj[kneeKey])
+        : solveIKDefault(hip, ankle, g.thigh, g.shin, side, 'knee');
+      kp[kneeIdx] = knee;
+      kp[ankleIdx] = ankle;
+      mj[kneeKey] = knee;
+    }
+  }
+
+  return kp;
+}
+
+function solveIKDefault(root, target, lenA, lenB, side, jointType) {
+  // Default heuristic matching reset_pose
+  const a = solveIK(root[0], root[1], target[0], target[1], lenA, lenB, -1);
+  const b = solveIK(root[0], root[1], target[0], target[1], lenA, lenB, 1);
+  if (jointType === 'elbow') {
+    return side === 'left' ? (a[0] <= b[0] ? a : b) : (a[0] >= b[0] ? a : b);
+  }
+  // knee
+  const hipBelow = root[1] < target[1];
+  const preferSmaller = side === 'right' ? hipBelow : !hipBelow;
+  return preferSmaller ? (a[0] <= b[0] ? a : b) : (a[0] >= b[0] ? a : b);
+}
+
+function getHandAnchors() {
+  if (!currentRoute) return {};
+  const np = nameToPos();
+  const sh = currentRoute.start_hands;
+  const result = {};
+  if (sh.L) result.left_hand = np[sh.L];
+  if (sh.R) result.right_hand = np[sh.R];
+  return result;
+}
+
+function getFootAnchors() {
+  if (!currentRoute) return {};
+  const np = nameToPos();
+  const sf = currentRoute.start_feet || {};
+  const result = {};
+  if (sf.L && np[sf.L]) result.left_foot = np[sf.L];
+  if (sf.R && np[sf.R]) result.right_foot = np[sf.R];
+  return result;
+}
+
+function nameToPos() {
+  const m = {};
+  for (const h of currentRoute.holds) m[h.name] = [h.x, h.y];
+  return m;
+}
+
+// ── Drawing ──
+function draw() {
+  // ── Pre-compute skeletons before sizing the canvas ──
+  let kp = null;
+  let autoKP = null;
+  if (currentRoute) {
+    kp = computeSkeleton([...torso], midJoints, torsoAngle);
+    if (showAuto && autoPose) {
+      const autoMJ = JSON.parse(JSON.stringify(autoPose.mid_joints));
+      autoKP = computeSkeleton([...autoPose.torso_board], autoMJ, autoPose.torso_angle || 0);
+    }
+  }
+
+  // ── Dynamic padding: expand so every joint is visible, but freeze while dragging ──
+  if (!dragging) {
+    pad = MIN_PAD;
+    const allPts = [...(kp || []), ...(autoKP || [])];
+    for (const pt of allPts) {
+      if (!pt) continue;
+      pad = Math.max(pad, Math.ceil(BOARD.left - pt[0] + MARGIN));
+      pad = Math.max(pad, Math.ceil(pt[0] - BOARD.right + MARGIN));
+      pad = Math.max(pad, Math.ceil(BOARD.bottom - pt[1] + MARGIN));
+      pad = Math.max(pad, Math.ceil(pt[1] - BOARD.top + MARGIN));
+    }
+  }
+
+  // ── Canvas size ──
+  const W = (BOARD.right - BOARD.left + 2 * pad) * SCALE;
+  const H = (BOARD.top - BOARD.bottom + 2 * pad) * SCALE;
+  canvas.width = W; canvas.height = H;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#282828';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#3c3c3c'; ctx.lineWidth = 0.5;
+  for (let bx = BOARD.left; bx <= BOARD.right; bx += 12) {
+    const [cx] = b2c(bx, 0);
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  }
+  for (let by = BOARD.bottom; by <= BOARD.top; by += 12) {
+    const [, cy] = b2c(0, by);
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  }
+
+  // Kickboard line
+  ctx.strokeStyle = '#504040'; ctx.lineWidth = 1;
+  const [, ky] = b2c(0, KICKBOARD_Y);
+  ctx.beginPath(); ctx.moveTo(0, ky); ctx.lineTo(W, ky); ctx.stroke();
+
+  // All holds (background)
+  for (const [hx, hy] of allHolds) {
+    const [cx, cy] = b2c(hx, hy);
+    ctx.beginPath(); ctx.arc(cx, cy, Math.max(2, SCALE / 3), 0, Math.PI * 2);
+    ctx.fillStyle = COLOR_HOLD; ctx.fill();
+  }
+
+  if (!currentRoute) return;
+
+  // Route holds
+  for (const h of currentRoute.holds) {
+    const [cx, cy] = b2c(h.x, h.y);
+    const col = ROLE_COLORS[h.role_id] || ROLE_COLORS[13];
+    ctx.beginPath(); ctx.arc(cx, cy, Math.max(4, SCALE / 2), 0, Math.PI * 2);
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Auto pose ghost
+  if (autoKP) {
+    drawSkeleton(autoKP, COLOR_AUTO_SKEL, 'rgba(255,255,255,0.08)', 1.5);
+  }
+
+  // Current skeleton (already computed above)
+  drawSkeleton(kp, COLOR_SKEL, COLOR_JOINT, 2);
+
+  // Anchor markers
+  const hands = getHandAnchors();
+  const feet = getFootAnchors();
+  for (const pos of [...Object.values(hands), ...Object.values(feet)]) {
+    const [cx, cy] = b2c(pos[0], pos[1]);
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.strokeStyle = COLOR_ANCHOR; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Draggable handles
+  drawHandle(torso, COLOR_TORSO_FILL, 7, 'torso');
+  for (const key of ['left_elbow', 'right_elbow', 'left_knee', 'right_knee']) {
+    if (midJoints[key]) drawHandle(midJoints[key], '#88ccff', 5, key);
+  }
+  // Free-limb ankle handles
+  const fAnchors = getFootAnchors();
+  for (const side of ['left', 'right']) {
+    if (!fAnchors[side + '_foot'] && midJoints[side + '_ankle']) {
+      drawHandle(midJoints[side + '_ankle'], '#ff8866', 5, side + '_ankle');
+    }
+  }
+  // Rotation handle at shoulder midpoint
+  const aRad = torsoAngle * Math.PI / 180;
+  const rotHandleX = torso[0] + geometry.shoulder_offset * Math.sin(aRad);
+  const rotHandleY = torso[1] + geometry.shoulder_offset * Math.cos(aRad);
+  drawHandle([rotHandleX, rotHandleY], '#cc66ff', 5, 'rotate');
+
+  // Info
+  document.getElementById('info-torso').textContent =
+    `Torso: (${torso[0].toFixed(1)}, ${torso[1].toFixed(1)})  Angle: ${torsoAngle.toFixed(1)}°`;
+}
+
+function drawSkeleton(kp, boneColor, jointColor, lineWidth) {
+  // Bones
+  ctx.strokeStyle = boneColor; ctx.lineWidth = lineWidth;
+  for (const [a, b] of BONES) {
+    if (!kp[a] || !kp[b]) continue;
+    const [x1, y1] = b2c(kp[a][0], kp[a][1]);
+    const [x2, y2] = b2c(kp[b][0], kp[b][1]);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  // Joints
+  for (let i = 0; i < 12; i++) {
+    if (!kp[i]) continue;
+    const [cx, cy] = b2c(kp[i][0], kp[i][1]);
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2);
+    ctx.fillStyle = jointColor; ctx.fill();
+  }
+}
+
+function drawHandle(pos, color, radius, label) {
+  const [cx, cy] = b2c(pos[0], pos[1]);
+  ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI*2);
+  ctx.fillStyle = color; ctx.globalAlpha = 0.8; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+  if (dragging === label) {
+    ctx.beginPath(); ctx.arc(cx, cy, radius + 3, 0, Math.PI*2);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+// ── Interaction ──
+function hitTest(cx, cy) {
+  const threshold = 10;
+  const [tx, ty] = b2c(torso[0], torso[1]);
+  if (Math.hypot(cx-tx, cy-ty) < threshold) return 'torso';
+  const fAnchors = getFootAnchors();
+  const keys = ['left_elbow', 'right_elbow', 'left_knee', 'right_knee'];
+  for (const side of ['left', 'right']) {
+    if (!fAnchors[side + '_foot']) keys.push(side + '_ankle');
+  }
+  for (const key of keys) {
+    if (!midJoints[key]) continue;
+    const [hx, hy] = b2c(midJoints[key][0], midJoints[key][1]);
+    if (Math.hypot(cx-hx, cy-hy) < threshold) return key;
+  }
+  // Rotation handle
+  const aRad = torsoAngle * Math.PI / 180;
+  const rhx = torso[0] + geometry.shoulder_offset * Math.sin(aRad);
+  const rhy = torso[1] + geometry.shoulder_offset * Math.cos(aRad);
+  const [rcx, rcy] = b2c(rhx, rhy);
+  if (Math.hypot(cx - rcx, cy - rcy) < threshold) return 'rotate';
+  return null;
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!currentRoute) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  dragging = hitTest(cx, cy);
+  if (dragging) {
+    document.getElementById('info-drag').textContent = `Dragging: ${dragging}`;
+    canvas.style.cursor = 'grabbing';
+  }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!currentRoute) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+
+  if (!dragging) {
+    canvas.style.cursor = hitTest(cx, cy) ? 'grab' : 'crosshair';
+    return;
+  }
+
+  const [bx, by] = c2b(cx, cy);
+
+  if (dragging === 'torso') {
+    torso = [bx, by];
+    midJoints = {};
+  } else if (dragging === 'rotate') {
+    // Angle from torso center to mouse, measured from vertical
+    const dx = bx - torso[0], dy = by - torso[1];
+    torsoAngle = Math.atan2(dx, dy) * 180 / Math.PI;
+    midJoints = {};  // recompute with defaults from new angle
+  } else {
+    midJoints[dragging] = [bx, by];
+  }
+  draw();
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (dragging) {
+    // After torso drag ends, capture the current mid-joints so they stick
+    if (dragging === 'torso') {
+      computeSkeleton([...torso], {...midJoints}, torsoAngle);
+    }
+    dragging = null;
+    document.getElementById('info-drag').textContent = '';
+    canvas.style.cursor = 'crosshair';
+    draw();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (dragging) {
+    dragging = null;
+    document.getElementById('info-drag').textContent = '';
+    canvas.style.cursor = 'crosshair';
+  }
+});
+
+// ── Route loading ──
+async function loadRoute(stem) {
+  const resp = await fetch(`/api/route/${stem}`);
+  currentRoute = await resp.json();
+  if (currentRoute.error) { currentRoute = null; return; }
+
+  autoPose = currentRoute.auto_pose;
+
+  // Start from override if it exists, otherwise auto
+  const src = currentRoute.existing_override || autoPose;
+  torso = [...src.torso_board];
+  midJoints = {};
+  torsoAngle = src.torso_angle || 0;
+  if (src.mid_joints) {
+    for (const [k, v] of Object.entries(src.mid_joints))
+      midJoints[k] = [...v];
+  }
+
+  // UI state
+  document.getElementById('board').style.display = 'block';
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('btn-save').disabled = false;
+  document.getElementById('btn-reset').disabled = false;
+  document.getElementById('btn-toggle-auto').disabled = false;
+  updateStatus();
+  draw();
+}
+
+function updateStatus() {
+  const el = document.getElementById('status-text');
+  if (!currentRoute) { el.textContent = ''; return; }
+  el.textContent = currentRoute.existing_override
+    ? `${currentRoute.route_name} — has manual override`
+    : `${currentRoute.route_name} — using auto pose`;
+}
+
+// ── Toolbar actions ──
+document.getElementById('btn-save').addEventListener('click', async () => {
+  if (!currentRoute) return;
+  // Ensure mid_joints are up-to-date
+  computeSkeleton([...torso], midJoints, torsoAngle);
+  const data = { torso_board: torso, torso_angle: torsoAngle, mid_joints: midJoints };
+  const resp = await fetch(`/api/save/${currentRoute.stem}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const result = await resp.json();
+  if (result.status === 'saved') {
+    currentRoute.existing_override = data;
+    updateStatus();
+    refreshRouteList();
+  }
+});
+
+document.getElementById('btn-reset').addEventListener('click', async () => {
+  if (!currentRoute) return;
+  if (currentRoute.existing_override) {
+    await fetch(`/api/delete/${currentRoute.stem}`, { method: 'DELETE' });
+    currentRoute.existing_override = null;
+  }
+  torso = [...autoPose.torso_board];
+  torsoAngle = autoPose.torso_angle || 0;
+  midJoints = {};
+  if (autoPose.mid_joints) {
+    for (const [k, v] of Object.entries(autoPose.mid_joints))
+      midJoints[k] = [...v];
+  }
+  updateStatus();
+  refreshRouteList();
+  draw();
+});
+
+document.getElementById('btn-toggle-auto').addEventListener('click', () => {
+  showAuto = !showAuto;
+  document.getElementById('btn-toggle-auto').textContent =
+    showAuto ? 'Hide Auto Pose' : 'Show Auto Pose';
+  draw();
+});
+
+// ── Route list ──
+async function refreshRouteList() {
+  const resp = await fetch('/api/routes');
+  const routes = await resp.json();
+  const list = document.getElementById('route-list');
+  list.innerHTML = '';
+  for (const r of routes) {
+    const div = document.createElement('div');
+    div.className = 'route-item' + (currentRoute && currentRoute.stem === r.stem ? ' active' : '');
+    div.innerHTML = `
+      <div>
+        <div class="name">${r.route_name || r.stem}</div>
+        <div class="grade">${r.grade || ''}</div>
+      </div>
+      ${r.has_override ? '<span class="badge">edited</span>' : ''}
+    `;
+    div.addEventListener('click', () => {
+      document.querySelectorAll('.route-item').forEach(el => el.classList.remove('active'));
+      div.classList.add('active');
+      loadRoute(r.stem);
+    });
+    list.appendChild(div);
+  }
+}
+
+// ── Init ──
+(async () => {
+  const [geoResp, holdsResp] = await Promise.all([
+    fetch('/api/geometry'),
+    fetch('/api/all_holds'),
+  ]);
+  geometry = await geoResp.json();
+  allHolds = await holdsResp.json();
+  await refreshRouteList();
+})();
+</script>
+</body>
+</html>

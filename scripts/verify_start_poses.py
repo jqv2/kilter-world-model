@@ -82,7 +82,8 @@ def render_start_pose(route, bone_lengths, all_holds, settle=True):
 
     space = create_space()
     ragdoll = create_ragdoll(space, bone_lengths)
-    reset_pose(ragdoll, space, hand_holds, foot_holds if foot_holds else None)
+    reset_pose(ragdoll, space, hand_holds, foot_holds if foot_holds else None,
+               pose_override=route.start_pose_override)
 
     if settle:
         for jname in _JOINT_NAMES:
@@ -129,18 +130,22 @@ def _build_route_configs(sequences, route_holds_list, stems):
 
         start_hands = None
         start_feet = None
+        start_pose_override = None
         override = load_hold_order_edit(stem)
         if override is not None:
             if "start_hands" in override:
                 start_hands = override["start_hands"]
             if "start_feet" in override:
                 start_feet = override["start_feet"]
+            if "start_pose_override" in override:
+                start_pose_override = override["start_pose_override"]
 
         routes.append(RouteConfig(
             holds=route_holds,
             hold_sequence=hold_seq,
             start_hands=start_hands,
             start_feet=start_feet,
+            start_pose_override=start_pose_override,
             stem=stem,
         ))
     return routes

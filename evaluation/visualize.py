@@ -271,25 +271,38 @@ def draw_skeleton(
         joint_color: BGR color for joint circles.
         thickness: Line thickness in pixels.
         joint_radius: Joint circle radius in pixels.
-        head_pos: Optional (2,) board-space position to draw a head circle.
-            Used by the RL baseline; ignored when None.
+        head_pos: When None and draw_head is True, auto-computed from
+            shoulder midpoint for both 17-kp COCO and 12-kp climbing formats.
     """
     n_kp = keypoints.shape[0]
     skeleton = config.COCO_SKELETON if n_kp == 17 else config.CLIMBING_SKELETON
 
+    # Head keypoint indices to skip for 17-kp COCO (nose, eyes, ears)
+    head_kp = {0, 1, 2, 3, 4} if n_kp == 17 else set()
+
     for i, j in skeleton:
+        if i in head_kp or j in head_kp:
+            continue
         pt1 = board_to_pixel(keypoints[i, 0], keypoints[i, 1], scale, pad)
         pt2 = board_to_pixel(keypoints[j, 0], keypoints[j, 1], scale, pad)
         cv2.line(img, pt1, pt2, skeleton_color, thickness)
 
-    for kp in keypoints:
+    for idx, kp in enumerate(keypoints):
+        if idx in head_kp:
+            continue
         pt = board_to_pixel(kp[0], kp[1], scale, pad)
         cv2.circle(img, pt, joint_radius, joint_color, -1)
-        
-    # Auto-compute head for climbing-keypoint poses
-    if head_pos is None and draw_head and n_kp == config.NUM_CLIMBING_KEYPOINTS:
-        shoulder_mid = (keypoints[0] + keypoints[1]) / 2
-        head_pos = shoulder_mid + np.array([0, _HEAD_RADIUS_BU])
+
+    # Auto-compute head position when not explicitly provided
+    if head_pos is None and draw_head:
+        if n_kp == config.NUM_CLIMBING_KEYPOINTS:
+            shoulder_mid = (keypoints[0] + keypoints[1]) / 2
+        elif n_kp == 17:
+            shoulder_mid = (keypoints[5] + keypoints[6]) / 2
+        else:
+            shoulder_mid = None
+        if shoulder_mid is not None:
+            head_pos = shoulder_mid + np.array([0, _HEAD_RADIUS_BU])
 
     if head_pos is not None and draw_head:
         pt = board_to_pixel(head_pos[0], head_pos[1], scale, pad)
@@ -408,6 +421,7 @@ def render_pose_video_with_targets(
     scale: int = RENDER_SCALE,
     pad: int = RENDER_PAD,
     gt_poses: list[np.ndarray] | None = None,
+    target_hands: list[str | None] | None = None,
 ) -> None:
     """
     Render poses with target hold overlay.
@@ -423,6 +437,8 @@ def render_pose_video_with_targets(
         pad: Padding in board units.
         gt_poses: Optional list of (17, 2) GT arrays. If provided, drawn
             as a dimmer skeleton underneath the predicted skeleton.
+        target_hands: Per-frame hand assignment ('L' or 'R') for coloring
+            the target hold marker. When None, uses default color.
     """
     all_holds = get_all_holds()
     board_img = render_board_image(route_holds, all_holds, scale, pad)
@@ -447,7 +463,8 @@ def render_pose_video_with_targets(
                 joint_radius=3,
             )
         draw_skeleton(frame, pose, scale, pad)
-        draw_target_hold(frame, target_positions[frame_idx], scale, pad)
+        hand = target_hands[frame_idx] if target_hands is not None else None
+        draw_target_hold(frame, target_positions[frame_idx], scale, pad, hand=hand)
 
         cv2.putText(
             frame, f"Frame {frame_idx}",

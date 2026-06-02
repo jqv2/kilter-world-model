@@ -183,10 +183,11 @@ def hanging_baseline_predictions(
         verbose: Print debug info.
 
     Returns:
-        Tuple of (predictions, target_positions, initial_pose) where
-        predictions is a list of T-1 poses (NUM_CLIMBING_KEYPOINTS, 2),
-        target_positions is (T-1, 2), and initial_pose is the frame-0
-        hanging pose (NUM_CLIMBING_KEYPOINTS, 2).
+        Tuple of (predictions, target_positions, initial_pose, target_hands)
+        where predictions is a list of T-1 poses (NUM_CLIMBING_KEYPOINTS, 2),
+        target_positions is (T-1, 2), initial_pose is the frame-0 hanging
+        pose (NUM_CLIMBING_KEYPOINTS, 2), and target_hands is a length-(T-1)
+        list of 'L', 'R', or None.
     """
     T = len(gt_frames)
 
@@ -231,6 +232,7 @@ def hanging_baseline_predictions(
     # --- Rebuild pose at every frame -------------------------------------
     all_poses = np.empty((T, config.NUM_CLIMBING_KEYPOINTS, 2), dtype=np.float32)
     target_positions = np.full((T, 2), np.nan, dtype=np.float32)
+    target_hands: list[str | None] = [None] * T
 
     cur_l = hold_by_name[override["start_hands"]["L"]].copy()
     cur_r = hold_by_name[override["start_hands"]["R"]].copy()
@@ -263,6 +265,7 @@ def hanging_baseline_predictions(
                             cur_l, moving, bone_lengths, shoulder_offset)
 
                     target_positions[b_start + j] = new_pos
+                    target_hands[b_start + j] = hand
 
             if hand == "L":
                 cur_l = new_pos.copy()
@@ -270,4 +273,4 @@ def hanging_baseline_predictions(
                 cur_r = new_pos.copy()
 
     predictions = [all_poses[f] for f in range(1, T)]
-    return predictions, target_positions[1:], all_poses[0]
+    return predictions, target_positions[1:], all_poses[0], target_hands[1:]

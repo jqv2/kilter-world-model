@@ -36,6 +36,10 @@ def main():
         "--no-route-edits", action="store_true",
         help="Ignore route edit files (use raw DB holds without exclusions)",
     )
+    parser.add_argument(
+        "--force-test", nargs="+", default=[],
+        help="List of video stems to guarantee in the test set.",
+    )
     args = parser.parse_args()
 
     print("Building dataset...")
@@ -43,6 +47,7 @@ def main():
         train_fraction=args.train_fraction,
         seed=args.seed,
         apply_edits=not args.no_route_edits,
+        force_test=args.force_test,
     )
 
     meta = data["metadata"]

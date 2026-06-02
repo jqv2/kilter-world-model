@@ -27,6 +27,7 @@ from models.world_model import (
     PoseTransformer, StructuredPoseTransformer,
     enforce_bone_lengths, compute_reference_bone_lengths,
     resolve_hold_sequence_and_targets,
+    extract_target_hands,
 )
 from evaluation.visualize import (
     lookup_route,
@@ -181,6 +182,7 @@ def main():
                 hold_seq, device, max_bone_lengths=ref_bones,
                 gt_poses=np.array(gt_poses),
             )
+            target_hands = extract_target_hands(hold_seq, target_positions)
         else:
             poses = autoregressive_rollout(
                 model, seed, n_frames, hold_positions, hold_roles, device,
@@ -203,6 +205,7 @@ def main():
             "fps": fps,
             "gt_poses_climbing": [p[config.CLIMBING_KEYPOINT_INDICES] for p in gt_poses],
             "target_positions": target_positions if is_structured else None,
+            "target_hands": target_hands if is_structured else None,
         })
 
     if not results:
@@ -239,6 +242,7 @@ def main():
                     fps=round(r["fps"] * args.speed),
                     title=title,
                     gt_poses=r["gt_poses_climbing"],
+                    target_hands=r["target_hands"],
                 )
             else:
                 render_pose_video(

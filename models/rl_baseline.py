@@ -660,12 +660,78 @@ def _solve_ik_2bone(
 
     return (root[0] + len_a * math.cos(mid_angle),
             root[1] + len_a * math.sin(mid_angle))
+    
+def _fix_joint_winding(ragdoll: Ragdoll) -> None:
+    """Adjust child body angles so RotaryLimitJoint ranges are satisfied.
+
+    After IK, body angles from atan2 are in (-π, π), but several joint
+    limit ranges span other intervals (e.g. right hip (5π/6, 11π/6)).
+    Pymunk checks raw child.angle - parent.angle without modular
+    wrapping, so a physically correct pose can appear out-of-range.
+
+    For each joint (proximal before distal so the chain stays
+    consistent): find the 2π shift of the raw relative angle that
+    lands inside the limit range.  If no shift fits, clamp to the
+    nearest boundary.  After changing the child angle, re-place the
+    child body so its proximal anchor stays at the joint world
+    position.
+    """
+    bl = ragdoll.bone_lengths_m
+    _seg_type = {
+        "left_shoulder": "upper_arm", "right_shoulder": "upper_arm",
+        "left_elbow": "forearm", "right_elbow": "forearm",
+        "left_hip": "thigh", "right_hip": "thigh",
+        "left_knee": "shin", "right_knee": "shin",
+    }
+
+    # Proximal-to-distal order so parent adjustments are visible to children
+    for joint_name in (
+        "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+        "left_elbow", "right_elbow", "left_knee", "right_knee",
+    ):
+        limits = _get_joint_limits(joint_name)
+        if limits is None:
+            continue
+
+        parent_name, child_name = _JOINT_BODIES[joint_name]
+        parent_body = ragdoll.bodies[parent_name]
+        child_body = ragdoll.bodies[child_name]
+
+        # Joint world position (from parent, which may already be adjusted)
+        pivot = ragdoll.joints[joint_name][0]
+        joint_world = parent_body.local_to_world(pivot.anchor_a)
+
+        lo, hi = limits
+        raw = child_body.angle - parent_body.angle
+
+        # Try 2π shifts, prefer in-range; fall back to nearest boundary
+        best_val = raw
+        best_dist = float('inf')
+        for k in range(-3, 4):
+            candidate = raw + k * 2 * math.pi
+            if lo <= candidate <= hi:
+                best_val = candidate
+                best_dist = 0
+                break
+            d_lo = abs(candidate - lo)
+            d_hi = abs(candidate - hi)
+            d = min(d_lo, d_hi)
+            if d < best_dist:
+                best_dist = d
+                best_val = lo if d_lo <= d_hi else hi
+
+        new_angle = parent_body.angle + best_val
+        if abs(new_angle - child_body.angle) > 1e-6:
+            seg_type = _seg_type[joint_name]
+            _place_body(child_body, _proximal_local(seg_type, bl),
+                        joint_world, new_angle)
 
 def reset_pose(
     ragdoll: Ragdoll,
     space: pymunk.Space,
     hand_holds: dict[str, tuple[float, float]],
     foot_positions: dict[str, tuple[float, float]] | None = None,
+    pose_override: dict | None = None,
 ) -> None:
     """Position the ragdoll at start holds via IK and create joints.
 
@@ -673,7 +739,7 @@ def reset_pose(
     so the body starts centered rather than hanging at full extension.
     Arms are allowed to start bent.  Adjusts downward only if a
     shoulder can't reach its hand hold.
-    
+
     For arms, elbows always point outward (right elbow rightward,
     left elbow leftward) regardless of shoulder-hand geometry.
 
@@ -692,6 +758,10 @@ def reset_pose(
             e.g. {"left_hand": (60, 120), "right_hand": (84, 120)}.
         foot_positions: Optional limb name -> (x, y) in board units.
             When omitted, legs hang straight down from the hips.
+        pose_override: Optional dict with "torso_board" ([x, y] in
+            board units) and/or "mid_joints" (joint name -> [x, y])
+            to override the automatic torso placement and IK bend
+            selection.  Used by the start pose editor.
     """
     bu2m = config.RL_BOARD_UNIT_TO_METERS
     bl = ragdoll.bone_lengths_m
@@ -707,64 +777,75 @@ def reset_pose(
     shoulder_offset = bl["torso"] - ragdoll.torso_com_offset
     arm_reach = bl["upper_arm"] + bl["forearm"]
 
-    # ── Torso placement: centroid of all contacts ──
-    all_contacts = list(hands_m.values()) + list(feet_m.values())
-    torso_x = sum(p[0] for p in all_contacts) / len(all_contacts)
-
-    if feet_m:
-        # Center vertically among contacts; clamp so shoulders
-        # don't end up above the highest hand
-        torso_y = sum(p[1] for p in all_contacts) / len(all_contacts)
-        max_hand_y = max(p[1] for p in hands_m.values())
-        torso_y = min(torso_y, max_hand_y - shoulder_offset)
+    # ── Torso placement ──
+    if pose_override and "torso_board" in pose_override:
+        torso_x = pose_override["torso_board"][0] * bu2m
+        torso_y = pose_override["torso_board"][1] * bu2m
     else:
-        # No feet: hang below hands
-        mid_y = sum(p[1] for p in hands_m.values()) / len(hands_m)
-        torso_y = mid_y - shoulder_offset - 0.7 * arm_reach
+        all_contacts = list(hands_m.values()) + list(feet_m.values())
+        torso_x = sum(p[0] for p in all_contacts) / len(all_contacts)
+
+        if feet_m:
+            torso_y = sum(p[1] for p in all_contacts) / len(all_contacts)
+            max_hand_y = max(p[1] for p in hands_m.values())
+            torso_y = min(torso_y, max_hand_y - shoulder_offset)
+        else:
+            mid_y = sum(p[1] for p in hands_m.values()) / len(hands_m)
+            torso_y = mid_y - shoulder_offset - 0.7 * arm_reach
 
     torso = ragdoll.bodies["torso"]
     torso.position = (torso_x, torso_y)
-    torso.angle = math.pi / 2
+    if pose_override and "torso_angle" in pose_override:
+        torso.angle = math.pi / 2 - math.radians(pose_override["torso_angle"])
+    else:
+        torso.angle = math.pi / 2
 
-    # World positions of shoulder and hip joints
+    # Shoulder/hip positions from torso angle
     hsw = bl["half_shoulder_width"]
     hhw = bl["half_hip_width"]
-    shoulder_y = torso_y + shoulder_offset
-    hip_y = torso_y - ragdoll.torso_com_offset
+    a = torso.angle
+    spine_dx, spine_dy = math.cos(a), math.sin(a)
+    lat_dx, lat_dy = -math.sin(a), math.cos(a)
+
+    sc_x = torso_x + shoulder_offset * spine_dx
+    sc_y = torso_y + shoulder_offset * spine_dy
+    hc_x = torso_x - ragdoll.torso_com_offset * spine_dx
+    hc_y = torso_y - ragdoll.torso_com_offset * spine_dy
 
     shoulders = {
-        "left": (torso_x - hsw, shoulder_y),
-        "right": (torso_x + hsw, shoulder_y),
+        "left":  (sc_x + hsw * lat_dx, sc_y + hsw * lat_dy),
+        "right": (sc_x - hsw * lat_dx, sc_y - hsw * lat_dy),
     }
     hips = {
-        "left": (torso_x - hhw, hip_y),
-        "right": (torso_x + hhw, hip_y),
+        "left":  (hc_x + hhw * lat_dx, hc_y + hhw * lat_dy),
+        "right": (hc_x - hhw * lat_dx, hc_y - hhw * lat_dy),
     }
 
-    # Lower torso if either arm can't reach its hold
-    for _ in range(10):
-        all_ok = True
-        for limb, hold_m in hands_m.items():
-            side = "left" if "left" in limb else "right"
-            dist = math.hypot(hold_m[0] - shoulders[side][0],
-                              hold_m[1] - shoulders[side][1])
-            if dist >= arm_reach * 0.98:
-                all_ok = False
+    if not (pose_override and "torso_board" in pose_override):
+        # Lower torso if either arm can't reach its hold
+        for _ in range(10):
+            all_ok = True
+            for limb, hold_m in hands_m.items():
+                side = "left" if "left" in limb else "right"
+                dist = math.hypot(hold_m[0] - shoulders[side][0],
+                                hold_m[1] - shoulders[side][1])
+                if dist >= arm_reach * 0.98:
+                    all_ok = False
+                    break
+            if all_ok:
                 break
-        if all_ok:
-            break
-        torso_y -= 0.05 * arm_reach
-        torso.position = (torso_x, torso_y)
-        shoulder_y = torso_y + shoulder_offset
-        hip_y = torso_y - ragdoll.torso_com_offset
-        shoulders = {
-            "left": (torso_x - hsw, shoulder_y),
-            "right": (torso_x + hsw, shoulder_y),
-        }
-        hips = {
-            "left": (torso_x - hhw, hip_y),
-            "right": (torso_x + hhw, hip_y),
-        }
+            torso_y -= 0.05 * arm_reach
+            torso.position = (torso_x, torso_y)
+            shoulder_y = torso_y + shoulder_offset
+            hip_y = torso_y - ragdoll.torso_com_offset
+            shoulders = {
+                "left": (torso_x - hsw, shoulder_y),
+                "right": (torso_x + hsw, shoulder_y),
+            }
+            hips = {
+                "left": (torso_x - hhw, hip_y),
+                "right": (torso_x + hhw, hip_y),
+            }
 
     # ── Arm IK: elbows always point outward ──
     for limb, hold_m in hands_m.items():
@@ -776,7 +857,15 @@ def reset_pose(
                                    bend_sign=1.0)
         # Right elbow: prefer larger x (outward right)
         # Left elbow: prefer smaller x (outward left)
-        if side == "left":
+        joint_key = f"{side}_elbow"
+        if (pose_override and "mid_joints" in pose_override
+                and joint_key in pose_override["mid_joints"]):
+            tgt = pose_override["mid_joints"][joint_key]
+            tgt_m = (tgt[0] * bu2m, tgt[1] * bu2m)
+            da = math.hypot(elbow_a[0] - tgt_m[0], elbow_a[1] - tgt_m[1])
+            db = math.hypot(elbow_b[0] - tgt_m[0], elbow_b[1] - tgt_m[1])
+            elbow = elbow_a if da <= db else elbow_b
+        elif side == "left":
             elbow = elbow_a if elbow_a[0] <= elbow_b[0] else elbow_b
         else:
             elbow = elbow_a if elbow_a[0] >= elbow_b[0] else elbow_b
@@ -800,24 +889,60 @@ def reset_pose(
                                      bend_sign=-1.0)
             knee_b = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
                                      bend_sign=1.0)
-            hip_below = hip[1] < foot_m[1]
-            if side == "right":
-                # hip below foot → smaller knee x
-                # hip above foot → larger knee x
-                prefer_smaller_x = hip_below
+            joint_key = f"{side}_knee"
+            if (pose_override and "mid_joints" in pose_override
+                    and joint_key in pose_override["mid_joints"]):
+                tgt = pose_override["mid_joints"][joint_key]
+                tgt_m = (tgt[0] * bu2m, tgt[1] * bu2m)
+                da = math.hypot(knee_a[0] - tgt_m[0], knee_a[1] - tgt_m[1])
+                db = math.hypot(knee_b[0] - tgt_m[0], knee_b[1] - tgt_m[1])
+                knee = knee_a if da <= db else knee_b
             else:
-                # hip below foot → larger knee x
-                # hip above foot → smaller knee x
-                prefer_smaller_x = not hip_below
-            if prefer_smaller_x:
-                knee = knee_a if knee_a[0] <= knee_b[0] else knee_b
-            else:
-                knee = knee_a if knee_a[0] >= knee_b[0] else knee_b
+                hip_below = hip[1] < foot_m[1]
+                if side == "right":
+                    prefer_smaller_x = hip_below
+                else:
+                    prefer_smaller_x = not hip_below
+                if prefer_smaller_x:
+                    knee = knee_a if knee_a[0] <= knee_b[0] else knee_b
+                else:
+                    knee = knee_a if knee_a[0] >= knee_b[0] else knee_b
             th_angle = math.atan2(knee[1] - hip[1], knee[0] - hip[0])
             sh_angle = math.atan2(foot_m[1] - knee[1], foot_m[0] - knee[0])
         else:
-            th_angle = -math.pi / 2
-            sh_angle = -math.pi / 2
+            ankle_key = f"{side}_ankle"
+            has_ankle = (pose_override and "mid_joints" in pose_override
+                         and ankle_key in pose_override.get("mid_joints", {}))
+            if has_ankle:
+                ankle_bu = pose_override["mid_joints"][ankle_key]
+                foot_m = (ankle_bu[0] * bu2m, ankle_bu[1] * bu2m)
+                knee_a = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
+                                         bend_sign=-1.0)
+                knee_b = _solve_ik_2bone(hip, foot_m, bl["thigh"], bl["shin"],
+                                         bend_sign=1.0)
+                joint_key = f"{side}_knee"
+                if (pose_override and "mid_joints" in pose_override
+                        and joint_key in pose_override["mid_joints"]):
+                    tgt = pose_override["mid_joints"][joint_key]
+                    tgt_m = (tgt[0] * bu2m, tgt[1] * bu2m)
+                    da = math.hypot(knee_a[0] - tgt_m[0], knee_a[1] - tgt_m[1])
+                    db = math.hypot(knee_b[0] - tgt_m[0], knee_b[1] - tgt_m[1])
+                    knee = knee_a if da <= db else knee_b
+                else:
+                    hip_below = hip[1] < foot_m[1]
+                    if side == "right":
+                        prefer_smaller_x = hip_below
+                    else:
+                        prefer_smaller_x = not hip_below
+                    if prefer_smaller_x:
+                        knee = knee_a if knee_a[0] <= knee_b[0] else knee_b
+                    else:
+                        knee = knee_a if knee_a[0] >= knee_b[0] else knee_b
+                th_angle = math.atan2(knee[1] - hip[1], knee[0] - hip[0])
+                sh_angle = math.atan2(foot_m[1] - knee[1], foot_m[0] - knee[0])
+            else:
+                th_angle = -math.pi / 2
+                sh_angle = -math.pi / 2
 
         th = ragdoll.bodies[f"{side}_thigh"]
         _place_body(th, _proximal_local("thigh", bl), hip, th_angle)
@@ -825,6 +950,9 @@ def reset_pose(
         knee_world = th.local_to_world(_distal_local("thigh", bl))
         sh = ragdoll.bodies[f"{side}_shin"]
         _place_body(sh, _proximal_local("shin", bl), knee_world, sh_angle)
+
+    # Fix angle winding so RotaryLimitJoints see in-range values
+    _fix_joint_winding(ragdoll)
 
     # Zero all velocities
     for body in ragdoll.bodies.values():
@@ -885,6 +1013,7 @@ class RouteConfig:
     start_hands: dict[str, str] | None = None
     start_feet: dict[str, str] | None = None
     stem: str = ""
+    start_pose_override: dict | None = None
 
 def prepare_routes_for_rl(
     dataset: dict,
@@ -939,12 +1068,17 @@ def prepare_routes_for_rl(
                 start_hands = override["start_hands"]
             if "start_feet" in override:
                 start_feet = override["start_feet"]
+                
+        start_pose_override = None
+        if "start_pose_override" in override:
+            start_pose_override = override["start_pose_override"]
 
         routes.append(RouteConfig(
             holds=route_holds,
             hold_sequence=hold_seq,
             start_hands=start_hands,
             start_feet=start_feet,
+            start_pose_override=start_pose_override,
             stem=stem,
         ))
 
@@ -1459,8 +1593,11 @@ class ClimbingEnv(gymnasium.Env):
         reset_pose(
             self._ragdoll, self._space, hand_holds,
             foot_holds if foot_holds else None,
+            pose_override=route.start_pose_override,
         )
 
+        # TODO: Uncomment if you want to bring back settling
+        """
         # Settle physics with motors braking to preserve IK pose
         for jname in _JOINT_NAMES:
             set_motor_rate(self._ragdoll, jname, 0.0)
@@ -1470,6 +1607,7 @@ class ClimbingEnv(gymnasium.Env):
         # Release brakes so the agent starts with passive joints
         for jname in _JOINT_NAMES:
             self._ragdoll.joints[jname][2].max_force = 0.0
+        """
 
         # Track anchor state
         self._anchor_hold_idx = {}
