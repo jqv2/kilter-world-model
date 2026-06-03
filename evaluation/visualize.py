@@ -1129,3 +1129,343 @@ def _draw_skeleton_mpl(
         )
         first = False
     ax.scatter(pose[:, 0], pose[:, 1], color=color, alpha=alpha, s=20, zorder=3)
+    
+
+# ─── Comparison visualization ────────────────────────────────────────────────
+
+# Colors for method trajectories (BGR for OpenCV)
+TRAJECTORY_COLORS = {
+    "Ground Truth": (255, 255, 255),   # white
+    "Hands-Only":   (0, 165, 255),     # orange
+    "World Model":  (255, 100, 0),     # blue
+    "RL":           (0, 255, 100),     # green
+}
+
+
+def render_trajectory_comparison_image(
+    method_sequences: dict[str, list[np.ndarray]],
+    route_holds: list[dict],
+    output_path: Path,
+    centroid_indices: list[int] | None = None,
+    scale: int = RENDER_SCALE,
+    pad: int = RENDER_PAD,
+) -> None:
+    """
+    Render the board with route holds and overlaid torso-centroid trajectories.
+
+    Draws each method's trajectory as a colored polyline on top of the
+    standard board rendering (grid + background holds + highlighted route holds).
+
+    Args:
+        method_sequences: Maps method label → list of (12, 2) climbing-keypoint
+            poses. Keys should match TRAJECTORY_COLORS.
+        route_holds: Route hold dicts with 'x', 'y', 'role_id'.
+        output_path: Save the image here (PNG).
+        centroid_indices: Keypoint indices to average for centroid path.
+            Defaults to config.TORSO_CENTROID_INDICES.
+        scale: Pixels per board unit.
+        pad: Padding in board units.
+    """
+    if centroid_indices is None:
+        centroid_indices = config.TORSO_CENTROID_INDICES
+
+    all_holds = get_all_holds()
+    img = render_board_image(route_holds, all_holds, scale, pad)
+
+    for label, poses in method_sequences.items():
+        color = TRAJECTORY_COLORS.get(label, (200, 200, 200))
+        centroids = [pose[centroid_indices].mean(axis=0) for pose in poses]
+        for k in range(len(centroids) - 1):
+            pt1 = board_to_pixel(centroids[k][0], centroids[k][1], scale, pad)
+            pt2 = board_to_pixel(centroids[k + 1][0], centroids[k + 1][1], scale, pad)
+            cv2.line(img, pt1, pt2, color, 2)
+
+    # Legend
+    h = img.shape[0]
+    y = 30
+    for label, color in TRAJECTORY_COLORS.items():
+        if label in method_sequences:
+            cv2.line(img, (10, y), (40, y), color, 3)
+            cv2.putText(img, label, (50, y + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            y += 25
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), img)
+    print(f"Saved trajectory comparison to {output_path}")
+    
+    
+def render_path_aligned_comparison_video(
+    method_sequences: dict[str, list[np.ndarray]],
+    output_path: Path,
+    fps: float = 10.0,
+    n_frames: int = 200,
+    align: str = "procrustes",
+) -> None:
+    """
+    Render side-by-side Procrustes-aligned poses synchronized by path progress.
+
+    All sequences are normalized by their centroid arc length so that
+    at each video frame, every panel shows the pose at the same fraction
+    of climb completion. Each panel shows the Procrustes-aligned pose
+    on a white background.
+
+    Args:
+        method_sequences: Maps label → list of (12, 2) poses. Should
+            include "Ground Truth" plus prediction methods.
+        output_path: Save the MP4 here.
+        fps: Output frame rate.
+        n_frames: Number of video frames (progress steps from 0 to 1).
+        align: Per-frame spatial alignment mode for non-GT panels.
+    """
+    from evaluation.metrics import _compute_path_progress, _align_pose_pair
+
+    labels = list(method_sequences.keys())
+    n_panels = len(labels)
+
+    # Pre-compute progress arrays and find GT
+    progress = {
+        label: _compute_path_progress(seq)
+        for label, seq in method_sequences.items()
+    }
+
+    gt_label = "Ground Truth"
+    gt_seq = method_sequences[gt_label]
+    gt_progress = progress[gt_label]
+
+    panel_w, panel_h = 250, 400
+    total_w = panel_w * n_panels
+    header = 30
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (total_w, panel_h + header),
+    )
+
+    sample_points = np.linspace(0.0, 1.0, n_frames)
+
+    for step, p in enumerate(sample_points):
+        frame = np.full((panel_h + header, total_w, 3), 255, dtype=np.uint8)
+
+        # Find GT frame at this progress
+        gi = int(np.argmin(np.abs(gt_progress - p)))
+
+        for col, label in enumerate(labels):
+            seq = method_sequences[label]
+            pi = int(np.argmin(np.abs(progress[label] - p)))
+
+            if label == gt_label:
+                pose = _center_pose_for_panel(seq[pi])
+                color = (100, 100, 100)
+            else:
+                ap, ag = _align_pose_pair(seq[pi], gt_seq[gi], align)
+                # Draw GT match (gray) then prediction (colored)
+                _draw_panel_skeleton(
+                    frame, ag, col=col, panel_w=panel_w,
+                    panel_h=panel_h, margin=header, color=(200, 200, 200),
+                )
+                pose = ap
+                color = TRAJECTORY_COLORS.get(label, (200, 100, 0))
+
+            _draw_panel_skeleton(
+                frame, pose, col=col, panel_w=panel_w,
+                panel_h=panel_h, margin=header, color=color, label=label,
+            )
+
+        pct = int(p * 100)
+        cv2.putText(
+            frame, f"{pct}%",
+            (total_w - 60, panel_h + header - 5),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1,
+        )
+        writer.write(frame)
+
+    writer.release()
+    print(f"Saved path-aligned comparison video ({n_frames} frames) to {output_path}")
+    
+    
+def _center_pose_for_panel(pose: np.ndarray) -> np.ndarray:
+    """Hip-center a (12,2) pose for panel rendering."""
+    hip = (pose[_HIP_L] + pose[_HIP_R]) / 2
+    return pose - hip
+
+
+def _draw_panel_skeleton(
+    frame: np.ndarray,
+    pose: np.ndarray,
+    col: int,
+    panel_w: int,
+    panel_h: int,
+    margin: int,
+    color: tuple,
+    label: str | None = None,
+) -> None:
+    """Draw a climbing skeleton into a specific panel of the comparison frame.
+
+    Poses are in centered board units; mapped to panel pixel coords with
+    a fixed scale and centered in the panel.
+
+    Args:
+        frame: Full video frame (modified in-place).
+        pose: (12, 2) centered climbing-keypoint pose.
+        col: Panel column index (0-based).
+        panel_w: Panel width in pixels.
+        panel_h: Panel height in pixels.
+        margin: Top margin in pixels (for labels).
+        color: BGR color.
+        label: If provided, drawn as the panel header.
+    """
+    # Map board units → panel pixels (20 px per board unit, centered)
+    px_scale = 6.0
+    cx = col * panel_w + panel_w // 2
+    cy = margin + panel_h // 2
+
+    def to_px(pt):
+        return (int(cx + pt[0] * px_scale), int(cy - pt[1] * px_scale))
+
+    for i, j in config.CLIMBING_SKELETON:
+        cv2.line(frame, to_px(pose[i]), to_px(pose[j]), color, 2)
+    for kp in pose:
+        cv2.circle(frame, to_px(kp), 3, color, -1)
+
+    if label:
+        cv2.putText(
+            frame, label,
+            (col * panel_w + 10, margin - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1,
+        )
+        
+        
+def render_2x2_comparison_video(
+    panels: list[dict],
+    route_holds: list[dict],
+    output_path: Path,
+    fps: float = 30.0,
+    n_frames: int | None = None,
+    scale: int = 4,
+    pad: int = RENDER_PAD,
+) -> None:
+    """
+    Render a 2x2 grid video comparing 4 methods on the same climb.
+
+    Each panel shows the board with route holds, a skeleton overlay,
+    and an optional target hold marker. All sequences are linearly
+    time-normalized to the same video length.
+
+    Args:
+        panels: List of exactly 4 dicts in order
+            [top-left, top-right, bottom-left, bottom-right], each with:
+            'label': str — method name drawn on the panel.
+            'poses': list of (K, 2) arrays in board-space coordinates.
+            'targets': optional (T, 2) array of per-frame target positions.
+            'target_hands': optional list of 'L'/'R'/None per frame.
+        route_holds: Route hold dicts for board rendering.
+        output_path: Save the MP4 here.
+        fps: Output frame rate.
+        n_frames: Video length. Defaults to the first panel's sequence length.
+        scale: Pixels per board unit for each panel.
+        pad: Padding in board units.
+    """
+    assert len(panels) == 4, f"Expected 4 panels, got {len(panels)}"
+
+    if n_frames is None:
+        n_frames = len(panels[0]["poses"])
+
+    all_holds = get_all_holds()
+    board_img = render_board_image(route_holds, all_holds, scale, pad)
+    panel_h, panel_w = board_img.shape[:2]
+
+    label_h = 30
+    cell_h = panel_h + label_h
+    total_h = cell_h * 2
+    total_w = panel_w * 2
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (total_w, total_h),
+    )
+
+    for frame_idx in range(n_frames):
+        grid = np.full((total_h, total_w, 3), 40, dtype=np.uint8)
+
+        for p_idx, panel in enumerate(panels):
+            row, col = divmod(p_idx, 2)
+            poses = panel["poses"]
+            src_idx = min(int(frame_idx * len(poses) / n_frames), len(poses) - 1)
+
+            cell = board_img.copy()
+            draw_skeleton(cell, poses[src_idx], scale, pad)
+
+            targets = panel.get("targets")
+            target_hands = panel.get("target_hands")
+            if targets is not None and src_idx < len(targets):
+                tgt = targets[src_idx]
+                if not (np.isnan(tgt[0]) or np.isnan(tgt[1])):
+                    hand = (target_hands[src_idx]
+                            if target_hands and src_idx < len(target_hands)
+                            else None)
+                    draw_target_hold(cell, tgt, scale, pad, hand=hand)
+
+            x0 = col * panel_w
+            y0 = row * cell_h + label_h
+            grid[y0:y0 + panel_h, x0:x0 + panel_w] = cell
+
+            cv2.putText(
+                grid, panel["label"],
+                (x0 + 10, row * cell_h + label_h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
+            )
+
+        writer.write(grid)
+
+    writer.release()
+    print(f"Saved 2x2 comparison video ({n_frames} frames) to {output_path}")
+    
+    
+def interpolate_pose_sequence(
+    poses: list[np.ndarray],
+    factor: int,
+    targets: np.ndarray | None = None,
+    target_hands: list[str | None] | None = None,
+) -> tuple[list[np.ndarray], np.ndarray | None, list[str | None] | None]:
+    """
+    Linearly interpolate a pose sequence for smoother playback.
+
+    Inserts factor-1 intermediate frames between each consecutive pair
+    by linear interpolation. Targets and target hands are held constant
+    (snapped, not interpolated) across sub-steps.
+
+    Args:
+        poses: List of (K, 2) pose arrays.
+        factor: Number of output frames per input frame.
+        targets: Optional (T, 2) per-frame target positions.
+        target_hands: Optional per-frame hand labels.
+
+    Returns:
+        (interpolated_poses, interpolated_targets, interpolated_hands).
+    """
+    if factor <= 1 or len(poses) < 2:
+        return poses, targets, target_hands
+
+    out_poses = []
+    for i in range(len(poses) - 1):
+        for s in range(factor):
+            alpha = s / factor
+            out_poses.append(poses[i] * (1 - alpha) + poses[i + 1] * alpha)
+    out_poses.append(poses[-1])
+
+    out_targets = None
+    if targets is not None:
+        out_targets = np.repeat(targets, factor, axis=0)[:len(out_poses)]
+
+    out_hands = None
+    if target_hands is not None:
+        out_hands = [h for h in target_hands for _ in range(factor)][:len(out_poses)]
+
+    return out_poses, out_targets, out_hands

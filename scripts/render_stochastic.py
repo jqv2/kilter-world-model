@@ -5,7 +5,10 @@ Usage:
         --checkpoint data/rl_checkpoints/milestone_00500000_stem_4_of_8.pt \
         --dataset data/dataset.npz \
         --route-stem stem_name \
-        --attempts 10
+        --attempts 1 \
+        --no-start-pose-edits
+        --save-keypoints
+        -edeterministic
 """
 
 from __future__ import annotations
@@ -33,11 +36,20 @@ def main():
                         help="Specific route stem. If omitted, runs all routes.")
     parser.add_argument("--attempts", type=int, default=10)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--no-start-pose-edits", action="store_true",
+                        help="Ignore manual start pose overrides; use auto IK poses.")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Use mean actions (no sampling), matching training eval behavior.")
+    parser.add_argument("--save-keypoints", action="store_true",
+                        help="Save best-attempt keypoints as .npz for metric evaluation.")
     args = parser.parse_args()
 
     device = config.get_device(args.device)
     dataset = load_dataset(Path(args.dataset))
     routes, bone_lengths = prepare_routes_for_rl(dataset)
+    if args.no_start_pose_edits:
+        for r in routes:
+            r.start_pose_override = None
     env = ClimbingEnv(routes, bone_lengths)
 
     obs_dim = env.observation_space.shape[0]
@@ -55,11 +67,18 @@ def main():
         obs = env._build_obs()
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
         with torch.no_grad():
-            cont_a, disc_a, _ = policy.sample(obs_t)
-        return {
-            "joint_deltas": cont_a.cpu().numpy(),
-            "grab_release": disc_a.cpu().numpy().astype(np.int32),
-        }
+            if args.deterministic:
+                mean, _, logits = policy._heads(obs_t)
+                return {
+                    "joint_deltas": mean.cpu().numpy(),
+                    "grab_release": (logits > 0).int().cpu().numpy(),
+                }
+            else:
+                cont_a, disc_a, _ = policy.sample(obs_t)
+                return {
+                    "joint_deltas": cont_a.cpu().numpy(),
+                    "grab_release": disc_a.cpu().numpy().astype(np.int32),
+                }
 
     stem_to_idx = {r.stem: i for i, r in enumerate(routes)}
     if args.route_stem:
@@ -68,7 +87,8 @@ def main():
         targets = [(r.stem, i) for i, r in enumerate(routes)]
 
     ckpt_name = Path(args.checkpoint).stem
-    out_dir = config.RL_VIZ_DIR / "stochastic"
+    mode = "deterministic" if args.deterministic else "stochastic"
+    out_dir = config.RL_VIZ_DIR / mode
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for stem, route_idx in targets:
@@ -87,6 +107,20 @@ def main():
                 best_data = data
 
         th = best_data["info"]["total_holds"]
+
+        if args.save_keypoints:
+            kp_array = np.stack(best_data["poses"])  # (T, 12, 2)
+            kp_path = out_dir / f"{ckpt_name}_{stem}_keypoints.npz"
+            np.savez_compressed(
+                kp_path,
+                poses=kp_array,
+                stem=stem,
+                holds_visited=best_hv,
+                total_holds=th,
+                outcome=best_data["outcome"],
+            )
+            print(f"  Saved keypoints {kp_array.shape} → {kp_path}")
+
         out_path = out_dir / f"{ckpt_name}_{stem}_{best_hv}_of_{th}.mp4"
         render_rl_video(
             best_data["poses"],

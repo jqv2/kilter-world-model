@@ -110,6 +110,8 @@ BOARD_SPACE_MAX_DISPLACEMENT = 5.0  # max mean keypoint displacement per frame i
 EVAL_CONFIDENCE_THRESHOLD = KEYPOINT_CONFIDENCE_THRESHOLD
 # Nearest-neighbor pose distance
 NN_POSE_DEDUP_THRESHOLD = 0.5     # min hip-centered displacement (board units) to include a new pose in the bank
+# Torso centroid for Fréchet distance: shoulders + hips in climbing keypoint space
+TORSO_CENTROID_INDICES = [0, 1, 6, 7]  # L_shoulder, R_shoulder, L_hip, R_hip
 
 ########################
 # Hanging Baseline

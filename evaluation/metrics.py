@@ -7,6 +7,8 @@ Evaluation metrics:
 """
 
 import numpy as np
+from scipy.linalg import orthogonal_procrustes
+from scipy.spatial.distance import cdist
 
 
 def mean_keypoint_error(
@@ -126,6 +128,235 @@ def summarize_autoregressive(errors: np.ndarray) -> dict:
     }
     
 
+def discrete_frechet_distance(
+    predicted_seq: list[np.ndarray],
+    gt_seq: list[np.ndarray],
+    centroid_indices: list[int] | None = None,
+) -> float:
+    """
+    Discrete Fréchet distance between predicted and GT torso-centroid paths.
+
+    Measures whether the skeleton followed the correct spatial trajectory
+    regardless of speed. Normalized by GT centroid path length so the
+    result is a dimensionless ratio comparable across climbs.
+    Extracts the torso centroid (mean of shoulders
+    and hips) from each frame, then computes the discrete Fréchet distance
+    between the two centroid polylines.
+
+    Args:
+        predicted_seq: List of T1 poses, each (K, 2) in climbing keypoint space.
+        gt_seq: List of T2 poses, each (K, 2) in climbing keypoint space.
+        centroid_indices: Keypoint indices to average for the centroid.
+            Defaults to config.TORSO_CENTROID_INDICES.
+
+    Returns:
+        Discrete Fréchet distance divided by GT centroid path length
+        (dimensionless), or np.nan if either sequence is empty or
+        the GT path has zero length.
+    """
+    if len(predicted_seq) == 0 or len(gt_seq) == 0:
+        return np.nan
+
+    if centroid_indices is None:
+        from config import TORSO_CENTROID_INDICES
+        centroid_indices = TORSO_CENTROID_INDICES
+
+    P = np.array([frame[centroid_indices].mean(axis=0) for frame in predicted_seq])
+    Q = np.array([frame[centroid_indices].mean(axis=0) for frame in gt_seq])
+
+    n, m = len(P), len(Q)
+    dist = cdist(P, Q)  # (n, m) pairwise Euclidean distances
+
+    ca = np.full((n, m), np.inf)
+    ca[0, 0] = dist[0, 0]
+    for i in range(1, n):
+        ca[i, 0] = max(ca[i - 1, 0], dist[i, 0])
+    for j in range(1, m):
+        ca[0, j] = max(ca[0, j - 1], dist[0, j])
+    for i in range(1, n):
+        for j in range(1, m):
+            ca[i, j] = max(
+                min(ca[i - 1, j], ca[i, j - 1], ca[i - 1, j - 1]),
+                dist[i, j],
+            )
+    # Normalize by GT path length so the metric is scale-independent
+    gt_arc = np.sum(np.linalg.norm(np.diff(Q, axis=0), axis=1))
+    if gt_arc < 1e-8:
+        return np.nan
+    return float(ca[n - 1, m - 1] / gt_arc)
+
+
+def mean_centroid_distance(
+    predicted_seq: list[np.ndarray],
+    gt_seq: list[np.ndarray],
+    centroid_indices: list[int] | None = None,
+    n_samples: int = 100,
+) -> float:
+    """
+    Mean centroid distance between predicted and GT paths, aligned by
+    path progress and normalized by GT path length.
+
+    At each of n_samples evenly spaced progress points, finds the
+    nearest frame in each sequence by cumulative centroid arc length
+    and computes the Euclidean distance between centroids.
+
+    Args:
+        predicted_seq: List of T1 poses, each (K, 2).
+        gt_seq: List of T2 poses, each (K, 2).
+        centroid_indices: Keypoint indices for centroid.
+            Defaults to config.TORSO_CENTROID_INDICES.
+        n_samples: Number of progress sample points.
+
+    Returns:
+        Mean centroid distance divided by GT path length (dimensionless),
+        or np.nan if either sequence is empty.
+    """
+    if len(predicted_seq) == 0 or len(gt_seq) == 0:
+        return np.nan
+
+    if centroid_indices is None:
+        from config import TORSO_CENTROID_INDICES
+        centroid_indices = TORSO_CENTROID_INDICES
+
+    pred_progress = _compute_path_progress(predicted_seq, centroid_indices)
+    gt_progress = _compute_path_progress(gt_seq, centroid_indices)
+
+    pred_centroids = np.array([f[centroid_indices].mean(axis=0) for f in predicted_seq])
+    gt_centroids = np.array([f[centroid_indices].mean(axis=0) for f in gt_seq])
+
+    gt_arc = np.sum(np.linalg.norm(np.diff(gt_centroids, axis=0), axis=1))
+    if gt_arc < 1e-8:
+        return np.nan
+
+    sample_points = np.linspace(0.0, 1.0, n_samples)
+    dists = []
+    for p in sample_points:
+        pi = int(np.argmin(np.abs(pred_progress - p)))
+        gi = int(np.argmin(np.abs(gt_progress - p)))
+        dists.append(np.linalg.norm(pred_centroids[pi] - gt_centroids[gi]))
+
+    return float(np.mean(dists) / gt_arc)
+
+
+def _center_pose(pose: np.ndarray, hip_indices: tuple[int, int] = (6, 7)) -> np.ndarray:
+    """Translate a pose so its hip midpoint is at the origin."""
+    midpoint = (pose[hip_indices[0]] + pose[hip_indices[1]]) / 2
+    return pose - midpoint
+
+
+def _align_pose_pair(
+    pred: np.ndarray, gt: np.ndarray, mode: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Align a predicted pose to a GT pose for comparison.
+
+    Args:
+        pred: (K, 2) predicted pose.
+        gt: (K, 2) ground truth pose.
+        mode: "center" for hip-centering only, "procrustes" for
+            center + rotate + uniform scale (aligns pred to gt).
+
+    Returns:
+        (aligned_pred, aligned_gt) tuple, both (K, 2).
+    """
+    if mode == "center":
+        return _center_pose(pred), _center_pose(gt)
+
+    # Procrustes: center both, then rotate + scale pred to match gt
+    pred_c = pred - pred.mean(axis=0)
+    gt_c = gt - gt.mean(axis=0)
+    R, _ = orthogonal_procrustes(pred_c, gt_c)
+    rotated = pred_c @ R
+    denom = np.trace(rotated.T @ rotated)
+    scale = np.trace(gt_c.T @ rotated) / denom if denom > 0 else 1.0
+    return scale * rotated, gt_c
+
+
+def _compute_path_progress(
+    seq: list[np.ndarray],
+    centroid_indices: list[int] | None = None,
+) -> np.ndarray:
+    """
+    Compute normalized cumulative arc length of the torso centroid path.
+
+    Maps each frame to a value in [0, 1] representing how far along
+    the spatial trajectory it is. Frame 0 maps to 0.0, the last frame
+    maps to 1.0, and intermediate frames are proportional to cumulative
+    centroid displacement.
+
+    Args:
+        seq: List of T poses, each (K, 2) in climbing keypoint space.
+        centroid_indices: Keypoint indices to average for the centroid.
+            Defaults to config.TORSO_CENTROID_INDICES.
+
+    Returns:
+        (T,) array of progress values in [0, 1].
+    """
+    if centroid_indices is None:
+        from config import TORSO_CENTROID_INDICES
+        centroid_indices = TORSO_CENTROID_INDICES
+
+    centroids = np.array([frame[centroid_indices].mean(axis=0) for frame in seq])
+    diffs = np.linalg.norm(np.diff(centroids, axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(diffs)])
+    total = cumulative[-1]
+    if total < 1e-8:
+        return np.linspace(0.0, 1.0, len(seq))
+    return cumulative / total
+
+
+def path_aligned_keypoint_error(
+    predicted_seq: list[np.ndarray],
+    gt_seq: list[np.ndarray],
+    gt_confidences: list[np.ndarray] | None = None,
+    confidence_threshold: float = 0.3,
+    align: str = "procrustes",
+    n_samples: int = 100,
+) -> float:
+    """
+    Mean keypoint error after path-progress alignment with per-frame
+    pose alignment.
+
+    Aligns two variable-length sequences by normalized spatial progress
+    (cumulative torso centroid arc length). At each of n_samples evenly
+    spaced progress values in [0, 1], finds the nearest frame in each
+    sequence, Procrustes-aligns them, and computes keypoint error.
+
+    This measures pose similarity at the same stage of the climb
+    regardless of speed, without assuming the sequences follow the
+    same spatial path (unlike DTW, which optimizes temporal warping).
+
+    Args:
+        predicted_seq: List of T1 poses, each (K, 2) in climbing keypoint space.
+        gt_seq: List of T2 poses, each (K, 2) in climbing keypoint space.
+        gt_confidences: List of T2 confidence arrays, each (K,). Optional.
+        confidence_threshold: Minimum confidence to include a keypoint.
+        align: Pose alignment mode — "center" or "procrustes".
+        n_samples: Number of evenly spaced progress points to compare at.
+
+    Returns:
+        Mean keypoint error across all sampled progress points,
+        or np.nan if either sequence is empty.
+    """
+    if len(predicted_seq) == 0 or len(gt_seq) == 0:
+        return np.nan
+
+    pred_progress = _compute_path_progress(predicted_seq)
+    gt_progress = _compute_path_progress(gt_seq)
+
+    sample_points = np.linspace(0.0, 1.0, n_samples)
+    errors = []
+    for p in sample_points:
+        pi = int(np.argmin(np.abs(pred_progress - p)))
+        gi = int(np.argmin(np.abs(gt_progress - p)))
+        ap, ag = _align_pose_pair(predicted_seq[pi], gt_seq[gi], align)
+        conf = gt_confidences[gi] if gt_confidences is not None else None
+        errors.append(mean_keypoint_error(ap, ag, conf, confidence_threshold))
+
+    valid = [e for e in errors if not np.isnan(e)]
+    return float(np.mean(valid)) if valid else np.nan
+
+
 # --- Climbing keypoint indices for hip/shoulder in climbing space ---
 _HIP_L, _HIP_R = 6, 7
 _SHOULDER_L, _SHOULDER_R = 0, 1
@@ -239,7 +470,8 @@ def _batch_procrustes_distances(
         bank_norm: (N, 12, 2) unit-Frobenius-normalized bank.
 
     Returns:
-        (N,) Procrustes distances to every bank entry.
+        (N,) Procrustes distances to every bank entry, normalized
+        to [0, 1] (0 = identical shape, 1 = maximally dissimilar).
     """
     q_norm = np.linalg.norm(query)
     if q_norm < 1e-8:
@@ -256,7 +488,7 @@ def _batch_procrustes_distances(
     det = M_all[:, 0, 0] * M_all[:, 1, 1] - M_all[:, 0, 1] * M_all[:, 1, 0]
 
     d_sq = 2.0 - 2.0 * np.sqrt(np.clip(tr + 2.0 * det, 0, None))
-    return np.sqrt(np.clip(d_sq, 0, None))
+    return np.sqrt(np.clip(d_sq, 0, None) / 2.0)
 
 
 def nearest_neighbor_pose_distance(
@@ -301,36 +533,22 @@ def nearest_neighbor_pose_distance(
 
 def summarize_nn_distances(
     distances: dict[str, np.ndarray],
-    poses: list[np.ndarray],
 ) -> dict:
     """
     Aggregate per-frame NN pose distances into per-climb summary statistics.
 
-    Uses displacement-weighted mean as the primary aggregate so that
-    transition frames (where methods actually differ) contribute more
-    than static frames.
-
     Args:
         distances: Dict with 'procrustes' and 'raw' arrays from
             nearest_neighbor_pose_distance, each shape (T,).
-        poses: List of T (12, 2) predicted poses, used to compute
-            per-frame displacement weights.
 
     Returns:
-        Dict with weighted_mean, median, and p95 for each variant.
+        Dict with mean, median, and p95 for each variant.
     """
-    # Displacement weights: mean keypoint movement from previous frame
-    displacements = np.zeros(len(poses))
-    for t in range(1, len(poses)):
-        displacements[t] = np.linalg.norm(poses[t] - poses[t - 1], axis=1).mean()
-    # Ensure nonzero total weight
-    weights = displacements / displacements.sum() if displacements.sum() > 0 else np.ones(len(poses)) / len(poses)
-
     summary = {}
     for key in ("procrustes", "raw"):
         d = distances[key]
         summary[key] = {
-            "weighted_mean": float(np.average(d, weights=weights)),
+            "mean": float(np.mean(d)),
             "median": float(np.median(d)),
             "p95": float(np.percentile(d, 95)),
         }
