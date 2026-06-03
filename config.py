@@ -17,6 +17,17 @@ POSES_DIR = DATA_DIR / "poses"
 PRODUCT_SIZE_ID = 10
 MAX_ROUTE_HOLDS = 40  # max holds per route (for padding); most Kilter routes have 6-15
 
+# Kilter DB role IDs → canonical 4 roles (12=start, 13=mid, 14=finish, 15=foot).
+# Multiple LED color sets map to the same semantic roles.
+ROLE_ID_MAP = {
+    12: 12, 13: 13, 14: 14, 15: 15,
+    20: 12, 21: 13, 22: 14, 23: 15,
+    24: 12, 25: 13, 26: 14, 27: 15,
+    28: 12, 29: 13, 30: 14, 31: 15,
+    32: 12, 33: 13, 34: 14, 35: 15,
+    42: 12, 43: 13, 44: 14, 45: 15,
+}
+
 ########################
 # ViTPose
 ########################

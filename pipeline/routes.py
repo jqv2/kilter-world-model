@@ -9,6 +9,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+import torch
 
 import numpy as np
 
@@ -171,15 +172,7 @@ def holds_to_array(
             roles: (N,) int array of role IDs
     """
     positions = np.array([[h["x"], h["y"]] for h in holds], dtype=np.float32)
-    role_map = {
-        12: 12, 13: 13, 14: 14, 15: 15,
-        20: 12, 21: 13, 22: 14, 23: 15,
-        24: 12, 25: 13, 26: 14, 27: 15,
-        28: 12, 29: 13, 30: 14, 31: 15,
-        32: 12, 33: 13, 34: 14, 35: 15,
-        42: 12, 43: 13, 44: 14, 45: 15,
-    }
-    roles = np.array([role_map.get(h["role_id"], 13) for h in holds], dtype=np.int64)
+    roles = np.array([config.ROLE_ID_MAP.get(h["role_id"], 13) for h in holds], dtype=np.int64)
 
     if normalize and len(positions) > 0:
         positions[:, 0] = (positions[:, 0] - BOARD_X_MIN) / (BOARD_X_MAX - BOARD_X_MIN)
@@ -212,6 +205,25 @@ def pad_holds(
     padded_roles[:n] = roles
     mask[:n] = False
     return padded_pos, padded_roles, mask
+
+
+def prepare_holds_for_model(
+    positions: np.ndarray,
+    roles: np.ndarray,
+    device: torch.device,
+    max_holds: int = config.MAX_ROUTE_HOLDS,
+) -> tuple:
+    """Pad, batch, and move hold arrays to device for single-sample inference.
+
+    Returns:
+        (h_pos, h_roles, mask) each as (1, max_holds, ...) tensors on device.
+    """
+    padded_pos, padded_roles, mask = pad_holds(positions, roles, max_holds)
+    return (
+        torch.from_numpy(padded_pos).unsqueeze(0).to(device),
+        torch.from_numpy(padded_roles).unsqueeze(0).to(device),
+        torch.from_numpy(mask).unsqueeze(0).to(device),
+    )
 
 
 def normalize_board_coords(coords: np.ndarray) -> np.ndarray:

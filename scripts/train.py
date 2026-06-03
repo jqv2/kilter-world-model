@@ -36,7 +36,34 @@ from evaluation.metrics import (
     summarize_autoregressive,
 )
 from pipeline.dataset import load_dataset
-from pipeline.routes import pad_holds, normalize_board_coords
+from pipeline.routes import pad_holds, normalize_board_coords, prepare_holds_for_model
+
+
+def _make_checkpoint_dict(model, optimizer, epoch, val_loss, args, apply_hold_orders, raw_meta):
+    """Build the dict saved at best/periodic/final checkpoints."""
+    return {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "val_loss": val_loss,
+        "config": {
+            "hidden_dim": config.MODEL_HIDDEN_DIM,
+            "n_layers": config.MODEL_LAYERS,
+            "n_heads": config.MODEL_HEADS,
+            "context_window": config.CONTEXT_WINDOW,
+            "max_holds": config.MAX_ROUTE_HOLDS,
+            "noise_std": args.noise_std,
+            "bone_weight": args.bone_weight,
+            "scheduled_sampling_max": args.scheduled_sampling_max,
+            "structured": args.structured,
+            "hold_orders_applied": apply_hold_orders,
+            "hold_weight": args.hold_weight,
+            "dropout": args.dropout,
+            "weight_decay": args.weight_decay,
+            "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
+        },
+        "dataset_metadata": raw_meta,
+    }
 
 
 def evaluate_teacher_forcing(
@@ -68,11 +95,7 @@ def evaluate_teacher_forcing(
                 seq_f.reshape(T, -1).astype("float32")
             ).to(device)
 
-            padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
-
-            h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-            h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-            mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+            h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(h_pos, h_roles, device)
 
             stride = config.ROLLOUT_STRIDE
             n_seed = config.CONTEXT_WINDOW * stride
@@ -130,11 +153,7 @@ def evaluate_autoregressive(
 
             flat = seq_f.reshape(T, -1).astype("float32")
 
-            padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
-
-            h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-            h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-            mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+            h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(h_pos, h_roles, device)
 
             stride = config.ROLLOUT_STRIDE
             n_seed = min(config.CONTEXT_WINDOW * stride, T)
@@ -330,11 +349,7 @@ def evaluate_teacher_forcing_structured(
                 seq_f.reshape(T, -1).astype("float32")
             ).to(device)
 
-            padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
-
-            h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-            h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-            mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+            h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(h_pos, h_roles, device)
 
             # Targets from GT (or manual hold-order override for this video)
             hold_seq, targets_board = resolve_hold_sequence_and_targets(
@@ -409,11 +424,7 @@ def evaluate_autoregressive_structured(
 
             flat = seq_f.reshape(T, -1).astype("float32")
 
-            padded_pos, padded_roles, mask = pad_holds(h_pos, h_roles)
-
-            h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-            h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-            mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+            h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(h_pos, h_roles, device)
 
             # Hold sequence "plan" from GT (or manual override for this video)
             hold_seq, _ = resolve_hold_sequence_and_targets(seq_f, r_holds, stem)
@@ -679,55 +690,17 @@ def main():
         # Save best
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "config": {
-                    "hidden_dim": config.MODEL_HIDDEN_DIM,
-                    "n_layers": config.MODEL_LAYERS,
-                    "n_heads": config.MODEL_HEADS,
-                    "context_window": config.CONTEXT_WINDOW,
-                    "max_holds": config.MAX_ROUTE_HOLDS,
-                    "noise_std": args.noise_std,
-                    "bone_weight": args.bone_weight,
-                    "scheduled_sampling_max": args.scheduled_sampling_max,
-                    "structured": args.structured,
-                    "hold_orders_applied": apply_hold_orders,
-                    "hold_weight": args.hold_weight,
-                    "dropout": args.dropout,
-                    "weight_decay": args.weight_decay,
-                    "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
-                },
-                "dataset_metadata": raw_meta,
-            }, args.checkpoint_dir / "best.pt")
+            torch.save(
+                _make_checkpoint_dict(model, optimizer, epoch, val_loss, args, apply_hold_orders, raw_meta),
+                args.checkpoint_dir / "best.pt",
+            )
         
         # Save periodic checkpoint every 10 epochs
         if epoch % 10 == 0:
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "config": {
-                    "hidden_dim": config.MODEL_HIDDEN_DIM,
-                    "n_layers": config.MODEL_LAYERS,
-                    "n_heads": config.MODEL_HEADS,
-                    "context_window": config.CONTEXT_WINDOW,
-                    "max_holds": config.MAX_ROUTE_HOLDS,
-                    "noise_std": args.noise_std,
-                    "bone_weight": args.bone_weight,
-                    "scheduled_sampling_max": args.scheduled_sampling_max,
-                    "structured": args.structured,
-                    "hold_orders_applied": apply_hold_orders,
-                    "hold_weight": args.hold_weight,
-                    "dropout": args.dropout,
-                    "weight_decay": args.weight_decay,
-                    "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
-                },
-                "dataset_metadata": raw_meta,
-            }, args.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pt")
+            torch.save(
+                _make_checkpoint_dict(model, optimizer, epoch, val_loss, args, apply_hold_orders, raw_meta),
+                args.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pt",
+            )
 
         # Periodic evaluation
         if epoch % args.eval_every == 0 or epoch == args.epochs:
@@ -773,28 +746,10 @@ def main():
             print()
 
     # Save final
-    torch.save({
-        "epoch": args.epochs,
-        "model_state_dict": model.state_dict(),
-        "val_loss": val_loss,
-        "config": {
-            "hidden_dim": config.MODEL_HIDDEN_DIM,
-            "n_layers": config.MODEL_LAYERS,
-            "n_heads": config.MODEL_HEADS,
-            "context_window": config.CONTEXT_WINDOW,
-            "max_holds": config.MAX_ROUTE_HOLDS,
-            "noise_std": args.noise_std,
-            "bone_weight": args.bone_weight,
-            "scheduled_sampling_max": args.scheduled_sampling_max,
-            "structured": args.structured,
-            "hold_orders_applied": apply_hold_orders,
-            "hold_weight": args.hold_weight,
-            "dropout": args.dropout,
-            "weight_decay": args.weight_decay,
-            "pose_dim": config.NUM_CLIMBING_KEYPOINTS * 2,
-        },
-        "dataset_metadata": raw_meta,
-    }, args.checkpoint_dir / "final.pt")
+    torch.save(
+        _make_checkpoint_dict(model, optimizer, args.epochs, val_loss, args, apply_hold_orders, raw_meta),
+        args.checkpoint_dir / "final.pt",
+    )
 
     print(f"\nDone. Best val loss: {best_val_loss:.6f}")
     print(f"Checkpoints saved to {args.checkpoint_dir}")

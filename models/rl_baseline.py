@@ -188,16 +188,6 @@ _JOINT_BODIES = {
     "right_knee": ("right_thigh", "right_shin"),
 }
 
-# Canonical role mapping (same as routes.py holds_to_array)
-_ROLE_MAP = {
-    12: 12, 13: 13, 14: 14, 15: 15,
-    20: 12, 21: 13, 22: 14, 23: 15,
-    24: 12, 25: 13, 26: 14, 27: 15,
-    28: 12, 29: 13, 30: 14, 31: 15,
-    32: 12, 33: 13, 34: 14, 35: 15,
-    42: 12, 43: 13, 44: 14, 45: 15,
-}
-
 _ROLE_START = 12
 _ROLE_FINISH = 14
 _ROLE_FOOT_ONLY = 15
@@ -1536,7 +1526,7 @@ class ClimbingEnv(gymnasium.Env):
         # Store route state
         self._hold_positions_bu = jittered_positions
         self._hold_roles = np.array(
-            [_ROLE_MAP.get(h["role_id"], 13) for h in route.holds],
+            [config.ROLE_ID_MAP.get(h["role_id"], 13) for h in route.holds],
             dtype=np.int64,
         )
         self._hold_sequence = []

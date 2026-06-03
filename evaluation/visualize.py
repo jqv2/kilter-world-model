@@ -9,7 +9,6 @@ Provides:
 """
 
 import math
-import re
 import sqlite3
 from pathlib import Path
 
@@ -21,7 +20,7 @@ from matplotlib.patches import FancyArrowPatch
 import config
 from models.world_model import enforce_bone_lengths, check_hand_arrival
 from evaluation.metrics import _batch_procrustes_distances, _HIP_L, _HIP_R
-
+from pipeline.routes import prepare_holds_for_model
 
 
 # ─── Board rendering constants ───────────────────────────────────────────────
@@ -59,93 +58,15 @@ ROLE_COLORS = {
 
 # ─── Route lookup ────────────────────────────────────────────────────────────
 
-import sqlite3
-import re
-from pathlib import Path
+from pipeline.routes import lookup_route_by_name
 
-def lookup_route(
-    climb_name: str,
-    db_path: Path | None = None,
-    layout_id: int = 1,
-) -> dict:
-    """
-    Look up a climb by exact name from the Kilter database.
 
-    Args:
-        climb_name: Name of the climb (case-sensitive exact match).
-        db_path: Path to kilter.db. Defaults to config.DATA_DIR / "kilter.db".
-        layout_id: Layout to filter placements by.
-
-    Returns:
-        Dict with:
-            'name': str - exact climb name from DB
-            'frames_str': str - raw frames encoding
-            'holds': list of {'x': float, 'y': float, 'name': str, 'role_id': int}
-            'grade': str or None - display difficulty grade
-    """
-    db = db_path or (config.DATA_DIR / "kilter.db")
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
-
-    normalized = (climb_name.strip()
-                  .replace("\u2019", "'").replace("\u2018", "'")
-                  .replace("\u201c", '"').replace("\u201d", '"'))
-
-    # Removed COLLATE NOCASE to enforce case-sensitivity
-    row = conn.execute("""
-        SELECT uuid, name, frames 
-        FROM climbs 
-        WHERE TRIM(REPLACE(REPLACE(REPLACE(REPLACE(name,
-            CHAR(8217), "'"), CHAR(8216), "'"),
-            CHAR(8220), '"'), CHAR(8221), '"')) = ?
-        LIMIT 1
-    """, (normalized,)).fetchone()
-
-    if row is None:
-        conn.close()
+def lookup_route(climb_name: str, db_path: Path | None = None) -> dict:
+    """Look up a climb by exact name. Raises ValueError if not found."""
+    result = lookup_route_by_name(climb_name, db_path)
+    if result is None:
         raise ValueError(f"No climb found exactly matching '{climb_name}'")
-
-    climb_uuid = row["uuid"]
-    climb_name_exact = row["name"]
-    frames_str = row["frames"]
-
-    placements = re.findall(r"p(\d+)r(\d+)", frames_str)
-
-    holds = []
-    for placement_id, role_id in placements:
-        hold = conn.execute("""
-            SELECT h.x, h.y, h.name
-            FROM placements p
-            JOIN holes h ON p.hole_id = h.id
-            WHERE p.id = ? AND p.layout_id = ?
-        """, (int(placement_id), layout_id)).fetchone()
-
-        if hold:
-            holds.append({
-                "x": hold["x"],
-                "y": hold["y"],
-                "name": hold["name"],
-                "role_id": int(role_id),
-            })
-
-    grade_row = conn.execute("""
-        SELECT dg.boulder_name
-        FROM climb_stats cs
-        JOIN difficulty_grades dg ON dg.difficulty = cs.display_difficulty
-        WHERE cs.climb_uuid = ? AND cs.angle = 30
-        LIMIT 1
-    """, (climb_uuid,)).fetchone()
-
-    grade = grade_row["boulder_name"] if grade_row else None
-
-    conn.close()
-
-    return {
-        "name": climb_name_exact,
-        "frames_str": frames_str,
-        "holds": holds,
-        "grade": grade,
-    }
+    return result
 
 
 def get_all_holds(db_path: Path | None = None) -> list[tuple[float, float]]:
@@ -815,17 +736,7 @@ def autoregressive_rollout(
     context_len = model.context_len
 
     # Prepare hold tensors (same for every frame)
-    n_holds = len(hold_positions)
-    padded_pos = np.zeros((config.MAX_ROUTE_HOLDS, 2), dtype="float32")
-    padded_roles = np.zeros(config.MAX_ROUTE_HOLDS, dtype="int64")
-    mask = np.ones(config.MAX_ROUTE_HOLDS, dtype=bool)
-    padded_pos[:n_holds] = hold_positions
-    padded_roles[:n_holds] = hold_roles
-    mask[:n_holds] = False
-
-    h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-    h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-    mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+    h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(hold_positions, hold_roles, device)
 
     stride = config.ROLLOUT_STRIDE
 
@@ -904,17 +815,7 @@ def autoregressive_rollout_structured(
     model.eval()
     context_len = model.context_len
 
-    n_holds = len(hold_positions)
-    padded_pos = np.zeros((config.MAX_ROUTE_HOLDS, 2), dtype="float32")
-    padded_roles = np.zeros(config.MAX_ROUTE_HOLDS, dtype="int64")
-    mask = np.ones(config.MAX_ROUTE_HOLDS, dtype=bool)
-    padded_pos[:n_holds] = hold_positions
-    padded_roles[:n_holds] = hold_roles
-    mask[:n_holds] = False
-
-    h_pos_t = torch.from_numpy(padded_pos).unsqueeze(0).to(device)
-    h_roles_t = torch.from_numpy(padded_roles).unsqueeze(0).to(device)
-    mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
+    h_pos_t, h_roles_t, mask_t = prepare_holds_for_model(hold_positions, hold_roles, device)
 
     stride = config.ROLLOUT_STRIDE
 
