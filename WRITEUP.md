@@ -164,8 +164,8 @@ For this particular climb, the world model performed very poorly (as can be seen
 <img width="2400" height="750" alt="Image" src="https://github.com/user-attachments/assets/3b96dcae-5f2b-4b69-a8b1-02a3b8b11c47" />
 This is a comparison between the predicted sequences for the climb referenced in the "1-climb comparison" section above. The RL agent manages to flail its way up to the top, while the world model completely drifts in the wrong direction and outputs nonsense.
 
-TODO: insert grid_comparison_WM_KEEP.mp4
-TODO: insert trajectories_WM_KEEP/png
+<video src="https://github.com/user-attachments/assets/ae121078-58f1-472b-b421-48a9cc3eb899" controls="controls" width="100%"></video>
+<img src="https://github.com/user-attachments/assets/afefcb16-fbdd-4fa8-9d36-3c01429a2159" />
 This is a comparison between the predicted sequences for one of the climbs in the "7-climb subset" section mentioned above. The RL agent gets stuck pretty quickly, while the world model actually makes two moves with somewhat plausible poses before its trajectory quickly drifts far away.
 
 **Technique emergence in the world model:**
@@ -176,7 +176,7 @@ Despite very poor aggregate trajectory metrics, upon visual inspection, the worl
 
 Unlike the ground truth and even the world model, the RL agent moves stiffly and jerkily. It has no exposure to actual human movement data so its movements don't look as "natural." Furthermore, because we are constraining the problem to 2D, it cannot represent certain techniques that require out-of-plane motion (hip turns, drop knees).
 
-TODO: insert shrimp_burrito_RL_KEEP.mp4 (also see above grid comparisons)
+<video src="https://github.com/user-attachments/assets/afeaba6a-0ffe-4b8e-b1a3-e505b97d3b62" controls="controls" width="100%"></video>
 
 Furthermore, even after spending a lot of time trying to tune the reward landscape, the RL agent still acts very "greedily" and will try to find the fastest way to the next hold (some iterations of the agent on certain climbs would bypass footholds completely and monkey bar to the next holds). While this often works for the first couple of target holds which are relatively close to the start, this makes it difficult for the RL agent to learn to progress, as to get further, the RL agent would need to learn to use footholds, often in a non-greedy way (i.e. swapping feet, using feet that seemingly take you further from the hold but are necessary for stability, etc.), which is very difficult to incentivize.
 
