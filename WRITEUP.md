@@ -44,7 +44,7 @@ I manually created a dataset by choosing 89 routes on the Kilter board and climb
 
 I implemented auto-detection of hand hold order (manually edited as needed). I also ended up deciding to try to further improve the signal-to-noise ratio by editing the route definitions for each climb to exclude any holds I may have skipped when I climbed them myself.
 
-### World model architecture
+### World Model
 
 **Why?:** In principle, a world model, *with enough data*, would be able to learn climbing dynamics directly from the keypoints from video. There is no need to hand-craft a complex climbing simulator and/or carefully design a reward landscape for Reinforcement Learning.
 
@@ -54,7 +54,7 @@ The model is trained with teacher forcing (ground-truth frames as input) using d
 
 Many training configurations were explored (varying stride sets, displacement weighting, limb constraint methods, hold proximity loss, keypoint subsets, etc.), but autoregressive rollout error consistently remained much higher than the teacher-forcing error across, confirming that the data scale was by far the bottleneck. The initial hypothesis was that a few hundred videos/climbs (representing on the order of a few thousand transitions between holds and several tens of thousands of frames) on a constrained board would provide enough transitions to learn at least some basic sense of dynamics, or at the very least produce plausible trajectories. This turned out to be wildly over-optimistic, as was the goal of collecting that much data in the limited time I had.
 
-### RL baseline
+### Reinforcement Learning
 
 **Why?:** This method is not limited by data scale. In principle, an RL agent can learn to progress through climbs and use stable climbing poses if given a good enough environment and well-designed reward landscape.
 
