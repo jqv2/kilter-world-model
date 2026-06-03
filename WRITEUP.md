@@ -161,11 +161,11 @@ For this particular climb, the world model performed very poorly (as can be seen
 **Video and trajectory comparison between ground-truth, baseline, world model, and RL:**
 
 <video src="https://github.com/user-attachments/assets/210c2c25-c0d4-484c-ba06-f855e536f197" controls="controls" width="100%"></video>
-<img width="2400" height="750" alt="Image" src="https://github.com/user-attachments/assets/3b96dcae-5f2b-4b69-a8b1-02a3b8b11c47" />
+<img width="600" src="https://github.com/user-attachments/assets/b397223b-b3ed-4395-924c-92a5533e606f" />
 This is a comparison between the predicted sequences for the climb referenced in the "1-climb comparison" section above. The RL agent manages to flail its way up to the top, while the world model completely drifts in the wrong direction and outputs nonsense.
 
 <video src="https://github.com/user-attachments/assets/ae121078-58f1-472b-b421-48a9cc3eb899" controls="controls" width="100%"></video>
-<img src="https://github.com/user-attachments/assets/afefcb16-fbdd-4fa8-9d36-3c01429a2159" />
+<img width="600" src="https://github.com/user-attachments/assets/afefcb16-fbdd-4fa8-9d36-3c01429a2159" />
 This is a comparison between the predicted sequences for one of the climbs in the "7-climb subset" section mentioned above. The RL agent gets stuck pretty quickly, while the world model actually makes two moves with somewhat plausible poses before its trajectory quickly drifts far away.
 
 **Technique emergence in the world model:**
