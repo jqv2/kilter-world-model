@@ -190,7 +190,11 @@ def evaluate_autoregressive(
 
     if not all_errors:
         return summarize_autoregressive(np.array([np.nan]))
-    return summarize_autoregressive(np.concatenate(all_errors))
+    per_video_means = [float(np.nanmean(e)) for e in all_errors]
+    result = summarize_autoregressive(np.concatenate(all_errors))
+    result["per_video_means"] = per_video_means
+    result["median_of_means"] = float(np.median(per_video_means))
+    return result
 
 
 def train_epoch(
@@ -493,7 +497,11 @@ def evaluate_autoregressive_structured(
 
     if not all_errors:
         return summarize_autoregressive(np.array([np.nan]))
-    return summarize_autoregressive(np.concatenate(all_errors))
+    per_video_means = [float(np.nanmean(e)) for e in all_errors]
+    result = summarize_autoregressive(np.concatenate(all_errors))
+    result["per_video_means"] = per_video_means
+    result["median_of_means"] = float(np.median(per_video_means))
+    return result
 
 
 def main():
@@ -743,6 +751,8 @@ def main():
                   f"median={tf['median']:.3f}, max={tf['max']:.3f}")
             print(f"  Autoregressive:  p25={ar['p25']:.3f}, p50={ar['p50']:.3f}, "
                   f"p75={ar['p75']:.3f}, p100={ar['p100']:.3f}")
+            print(f"  AR median-of-means: {ar['median_of_means']:.3f}"
+                  f"  (per-video: {[round(v, 2) for v in ar['per_video_means']]})")
             print()
 
     # Save final

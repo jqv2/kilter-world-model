@@ -1,6 +1,7 @@
 # Data
 data/*
 !data/raw/climb_log.csv
+tb2-colab/
 
 # Python
 __pycache__/

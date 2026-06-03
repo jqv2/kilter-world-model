@@ -94,7 +94,7 @@ def rollout_rl_deterministic(
     video_stem: str,
     dataset_path: Path,
     device: torch.device,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], np.ndarray | None, list | None, dict]:
     """
     Run a deterministic RL rollout for a specific route.
 
@@ -108,7 +108,10 @@ def rollout_rl_deterministic(
         device: Torch device.
 
     Returns:
-        List of (12, 2) climbing-keypoint poses.
+        Tuple of (poses, targets, target_hands, info) where poses is a
+        list of (12, 2) climbing-keypoint arrays, targets is (T, 2) or
+        None, target_hands is a list or None, and info is the episode
+        info dict containing 'holds_visited' and 'total_holds'.
     """
     data = load_dataset(dataset_path)
     routes, bone_lengths = prepare_routes_for_rl(data)
@@ -139,7 +142,7 @@ def rollout_rl_deterministic(
     # Convert target list to (T, 2) array if present
     if targets is not None:
         targets = np.array(targets, dtype=np.float32)
-    return episode["poses"], targets, target_hands
+    return episode["poses"], targets, target_hands, episode["info"]
 
 
 def generate_predictions(
@@ -219,14 +222,14 @@ def generate_predictions(
         )
 
     # --- RL ---
+    rl_poses = None
     rl_targets, rl_target_hands = None, None
     if rl_npz_path is not None:
         print(f"Loading RL predictions from {rl_npz_path}...")
         rl_poses = load_rl_poses(rl_npz_path)
-    else:
-        ...
+    elif rl_checkpoint_path is not None:
         print(f"Running deterministic RL rollout from {rl_checkpoint_path}...")
-        rl_poses, rl_targets, rl_target_hands = rollout_rl_deterministic(
+        rl_poses, rl_targets, rl_target_hands, _rl_info = rollout_rl_deterministic(
             rl_checkpoint_path, video_stem, dataset_path, device,
         )
 
@@ -305,7 +308,7 @@ def main():
     parser.add_argument("--climb", required=True, help="Climb name in Kilter DB")
     parser.add_argument("--checkpoint", type=Path, required=True,
                         help="World model checkpoint")
-    rl_group = parser.add_mutually_exclusive_group(required=True)
+    rl_group = parser.add_mutually_exclusive_group(required=False)
     rl_group.add_argument("--rl-npz", type=Path,
                           help="Path to pre-saved RL predictions .npz")
     rl_group.add_argument("--rl-checkpoint", type=Path,
@@ -332,7 +335,9 @@ def main():
     )
 
     gt_seq = results["Ground Truth"]
-    methods = {k: results[k] for k in ("Hands-Only", "World Model", "RL")}
+    methods = {k: results[k] for k in ("Hands-Only", "World Model")}
+    if results["RL"] is not None:
+        methods["RL"] = results["RL"]
 
     # --- Build pose bank ---
     print("Building pose bank...")

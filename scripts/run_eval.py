@@ -184,23 +184,28 @@ def eval_model_checkpoint(
         "ar_p50": ar["p50"],
         "ar_p75": ar["p75"],
         "ar_p100": ar["p100"],
+        "ar_median_of_means": ar.get("median_of_means"),
+        "ar_per_video_means": ar.get("per_video_means"),
         "n_videos": len(data["test_sequences"]),
     }
 
 
 def print_comparison_table(results):
     """Print a formatted comparison table of all evaluated methods."""
-    print(f"\n{'='*90}")
-    print(f"{'Method':<35} {'TF Mean':>8} {'TF Med':>8} {'AR p25':>8} {'AR p50':>8} {'AR p75':>8} {'AR p100':>8}")
-    print(f"{'-'*90}")
+    print(f"\n{'='*100}")
+    print(f"{'Method':<35} {'TF Mean':>8} {'TF Med':>8} {'AR Med-of-Means':>16} {'AR p100':>8}")
+    print(f"{'-'*100}")
     for r in results:
+        ar_mom = r.get('ar_median_of_means')
+        ar_mom_str = f"{ar_mom:>16.2f}" if ar_mom is not None else f"{'N/A':>16}"
         print(
             f"{r['name']:<35} "
             f"{r['tf_mean']:>8.2f} {r['tf_median']:>8.2f} "
-            f"{r['ar_p25']:>8.2f} {r['ar_p50']:>8.2f} "
-            f"{r['ar_p75']:>8.2f} {r['ar_p100']:>8.2f}"
+            f"{ar_mom_str} {r['ar_p100']:>8.2f}"
         )
-    print(f"{'='*90}")
+    if results and results[-1].get('ar_per_video_means'):
+        print(f"\nPer-video AR means: {[round(v, 2) for v in results[-1]['ar_per_video_means']]}")
+    print(f"{'='*100}")
 
 
 def main():
